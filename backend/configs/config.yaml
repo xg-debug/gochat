@@ -1,0 +1,24 @@
+app:
+  name: gochat
+  host: 0.0.0.0
+  port: 8080
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: root
+  password: 167219
+  databaseName: gochat
+
+jwt:
+  secret: cdq123
+  expireHours: 72
+
+log:
+  logPath: logs/gochat.log
+  # level: info
+  # filename: logs/gochat.log
+  # max_size: 100
+  # max_backups: 10
+  # max_age: 7
+  # compress: true
