@@ -43,7 +43,8 @@ async function onRegister() {
   try {
     await auth.register(form.username, form.password, form.nickname)
     if (auth.isAuthenticated) {
-      router.push('/chat')
+      ElMessage.success('注册成功')
+      // router.push('/chat')
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : '注册失败'

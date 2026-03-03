@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// 升级器（HTTP -> WS）
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		return true

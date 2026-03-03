@@ -1,20 +1,26 @@
-app:
-  name: gochat
+MainConfig:
+  appName: gochat
   host: 0.0.0.0
   port: 8080
 
-mysql:
+MysqlConfig:
   host: 127.0.0.1
   port: 3306
   user: root
   password: 167219
   databaseName: gochat
 
-jwt:
+RedisConfig:
+  host: 127.0.0.1
+  port: 6379
+  password: 167219
+  db: 0
+
+JwtConfig:
   secret: cdq123
   expireHours: 72
 
-log:
+LogConfig:
   logPath: logs/gochat.log
   # level: info
   # filename: logs/gochat.log
@@ -22,3 +28,12 @@ log:
   # max_backups: 10
   # max_age: 7
   # compress: true
+
+KafkaConfig:
+  messageMode: channel # 消息模式 channel or kafka
+  hostPort: 127.0.0.1:9092 # 127.0.0.1:9092,127.0.0.1:9093 多个Kafka服务器
+  loginTopic: login
+  chatTopic: chat
+  logoutTopic: logout
+  partition: 0 # Kafka分区
+  timeout: 1 # 单位秒

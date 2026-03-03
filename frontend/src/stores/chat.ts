@@ -48,6 +48,32 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function startConversation(contactId: string) {
+    // 规范化会话ID：单聊用户ID统一加 u_ 前缀
+    const targetConvId = contactId.startsWith('u_') ? contactId : `u_${contactId}`
+    
+    const existing = conversations.value.find(c => c.id === targetConvId)
+    if (existing) {
+      selectConversation(targetConvId)
+    } else {
+      // 查找联系人信息（使用原始ID）
+      const rawId = contactId.startsWith('u_') ? contactId.slice(2) : contactId
+      const contact = contacts.value.find(c => c.id === rawId)
+      
+      if (contact) {
+        const newConv: Conversation = {
+          id: targetConvId,
+          name: contact.name,
+          avatar: contact.avatar,
+          lastMessage: '',
+          unread: 0,
+        }
+        conversations.value.unshift(newConv)
+        selectConversation(targetConvId)
+      }
+    }
+  }
+
   function connect(userId: number, token: string) {
     if (wsClient.value || !token) return
     currentUserId.value = userId
@@ -59,6 +85,15 @@ export const useChatStore = defineStore('chat', () => {
   function disconnect() {
     wsClient.value?.disconnect()
     wsClient.value = null
+  }
+
+  function reset() {
+    conversations.value = []
+    contacts.value = []
+    messageMap.value = {}
+    activeConversationId.value = ''
+    currentUserId.value = 0
+    disconnect()
   }
 
   function sendMessage(
@@ -80,6 +115,12 @@ export const useChatStore = defineStore('chat', () => {
       messageMap.value[conversationId] = []
     }
     messageMap.value[conversationId].push(newMessage)
+    const conversation = conversations.value.find(
+      (item: Conversation) => item.id === conversationId,
+    )
+    if (conversation) {
+      conversation.lastMessage = contentType === 'image' ? '[图片]' : content
+    }
     wsClient.value?.send({
       type: 'single',
       from_id: currentUserId.value || 1,
@@ -120,7 +161,8 @@ export const useChatStore = defineStore('chat', () => {
       }
       conversations.value.unshift(conversation)
     }
-    conversation.lastMessage = incoming.content
+    conversation.lastMessage =
+      incoming.contentType === 'image' ? '[图片]' : incoming.content
     if (conversationId !== activeConversationId.value) {
       conversation.unread += 1
     }
@@ -133,8 +175,10 @@ export const useChatStore = defineStore('chat', () => {
     activeMessages,
     bootstrap,
     selectConversation,
+    startConversation,
     connect,
     disconnect,
     sendMessage,
+    reset,
   }
 })

@@ -32,7 +32,10 @@ watch(
           {{ item.fromId === `u_${auth.user?.id || 1}` ? '我' : '对' }}
         </div>
         <div class="message-bubble">
-          <div class="message-content">{{ item.content }}</div>
+          <div v-if="item.contentType === 'image'" class="message-image">
+            <img :src="item.content" alt="image" />
+          </div>
+          <div v-else class="message-content">{{ item.content }}</div>
         </div>
       </div>
     </div>
@@ -96,5 +99,11 @@ watch(
   font-size: 14px;
   color: #111827;
   white-space: pre-wrap;
+}
+
+.message-image img {
+  max-width: 220px;
+  border-radius: 6px;
+  display: block;
 }
 </style>

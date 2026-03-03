@@ -9,9 +9,9 @@ import (
 
 
 type MainConfig struct {
-	Name string `yaml:"name"`
-	Host string `yaml:"host"`
-	Port int	`yaml:"port"`
+	AppName string `yaml:"appName"`
+	Host    string `yaml:"host"`
+	Port    int	   `yaml:"port"`
 }
 
 type MysqlConfig struct {
@@ -27,7 +27,6 @@ type RedisConfig struct {
 	Port 	 int    	`yaml:"port"`
 	Password string 	`yaml:"password"`
 	Db       int    	`yaml:"db"`
-
 }
 
 type KafkaConfig struct {
@@ -50,18 +49,18 @@ type JwtConfig struct {
 }
 
 type Config struct {
-	MainConfig  `yaml:"app"`
-	MysqlConfig `yaml:"mysql"`
-	RedisConfig `yaml:"redis"`
-	KafkaConfig `yaml:"kafka"`
-	LogConfig   `yaml:"log"`
-	JwtConfig   `yaml:"jwt"`
+	MainConfig  `yaml:"MainConfig"`
+	MysqlConfig `yaml:"MysqlConfig"`
+	RedisConfig `yaml:"RedisConfig"`
+	KafkaConfig `yaml:"KafkaConfig"`
+	LogConfig   `yaml:"LogConfig"`
+	JwtConfig   `yaml:"JwtConfig"`
 }
 
 var config *Config
 
 func LoadConfig() error {
-	viper.SetConfigFile("configs/config.yaml")
+	viper.SetConfigFile("../configs/config.yaml")
 	viper.SetConfigType("yaml")
 
 	if err := viper.ReadInConfig(); err != nil {

@@ -9,6 +9,8 @@ import (
 	"gochat/internal/pkg/db"
 )
 
+// 分发逻辑
+
 type chatPayload struct {
 	Content     string `json:"content"`
 	ContentType string `json:"contentType"`
@@ -46,20 +48,35 @@ func saveMessage(msg *WSMessage, chatType int8) {
 		return
 	}
 	content := strings.TrimSpace(string(msg.Payload))
+	contentType := "text"
 	var payload chatPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
 		if strings.TrimSpace(payload.Content) != "" {
 			content = payload.Content
 		}
+		if strings.TrimSpace(payload.ContentType) != "" {
+			contentType = strings.TrimSpace(payload.ContentType)
+		}
 	}
 	if content == "" {
 		return
+	}
+	msgType := int8(1)
+	switch strings.ToLower(contentType) {
+	case "image":
+		msgType = 2
+	case "file":
+		msgType = 3
+	case "video":
+		msgType = 4
+	default:
+		msgType = 1
 	}
 	message := model.Message{
 		FromID:    int64(msg.FromID),
 		ToID:      int64(msg.ToID),
 		ChatType:  chatType,
-		MsgType:   1,
+		MsgType:   msgType,
 		Content:   content,
 		Status:    0,
 		CreatedAt: time.Now(),

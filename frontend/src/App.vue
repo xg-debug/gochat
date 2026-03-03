@@ -1,5 +1,23 @@
 <script setup lang="ts">
-// 应用根组件，承载路由视图
+import { onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from './stores/auth'
+
+const router = useRouter()
+const authStore = useAuthStore()
+
+const handleUnauthorized = () => {
+  authStore.logout()
+  router.push('/login')
+}
+
+onMounted(() => {
+  window.addEventListener('unauthorized', handleUnauthorized)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('unauthorized', handleUnauthorized)
+})
 </script>
 
 <template>

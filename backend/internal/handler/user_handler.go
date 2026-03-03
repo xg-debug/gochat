@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"gochat/internal/model"
 	"gochat/internal/pkg/auth"
@@ -307,7 +308,15 @@ func Conversations(c *gin.Context) {
 			Limit(1).
 			Find(&msg).Error
 		if err == nil && msg.ID > 0 {
-			lastMessage = msg.Content
+			if msg.MsgType == 2 {
+				lastMessage = "[图片]"
+			} else if msg.MsgType == 3 {
+				lastMessage = "[文件]"
+			} else if msg.MsgType == 4 {
+				lastMessage = "[视频]"
+			} else {
+				lastMessage = msg.Content
+			}
 		}
 		result = append(result, conversationResponse{
 			ID:          fmt.Sprintf("u_%d", account.ID),
@@ -356,7 +365,7 @@ func Messages(c *gin.Context) {
 			ID:          fmt.Sprintf("m_%d", msg.ID),
 			FromID:      fmt.Sprintf("u_%d", msg.FromID),
 			Content:     msg.Content,
-			ContentType: "text",
+			ContentType: msgTypeToContentType(msg.MsgType),
 			Time:        msg.CreatedAt.UnixMilli(),
 			Status:      "delivered",
 		})
@@ -368,4 +377,36 @@ func parseInt64(value string) (int64, error) {
 	var parsed int64
 	_, err := fmt.Sscanf(value, "%d", &parsed)
 	return parsed, err
+}
+
+func msgTypeToContentType(msgType int8) string {
+	switch msgType {
+	case 2:
+		return "image"
+	case 3:
+		return "file"
+	case 4:
+		return "video"
+	default:
+		return "text"
+	}
+}
+
+func Logout(c *gin.Context) {
+	token := auth.ExtractToken(c)
+	if token == "" {
+		c.JSON(400, gin.H{"error": "missing token"})
+		return
+	}
+	claims, err := auth.ParseToken(token)
+	if err != nil {
+		c.JSON(401, gin.H{"error": "invalid token"})
+		return
+	}
+	if claims.ExpiresAt != nil {
+		auth.RevokeToken(token, claims.ExpiresAt.Time)
+	} else {
+		auth.RevokeToken(token, time.Now().Add(72*time.Hour))
+	}
+	c.JSON(200, gin.H{"message": "ok"})
 }

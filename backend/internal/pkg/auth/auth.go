@@ -65,9 +65,13 @@ func CheckPassword(hash string, password string) error {
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := extractToken(c)
+		token := ExtractToken(c)
 		if token == "" {
 			c.AbortWithStatusJSON(401, gin.H{"error": "missing token"})
+			return
+		}
+		if IsTokenRevoked(token) {
+			c.AbortWithStatusJSON(401, gin.H{"error": "token revoked"})
 			return
 		}
 		claims, err := ParseToken(token)
@@ -80,12 +84,13 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		c.Set("user_id", uint64(claims.UserID))
+		c.Set("userID", int64(claims.UserID))
 		c.Set("username", claims.Username)
 		c.Next()
 	}
 }
 
-func extractToken(c *gin.Context) string {
+func ExtractToken(c *gin.Context) string {
 	authHeader := c.GetHeader("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))

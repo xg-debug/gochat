@@ -1,18 +1,21 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { loginRequest, profileRequest, registerRequest } from '../services/api'
-
-export type UserProfile = {
-  id: number
-  username: string
-  nickname: string
-  avatar: string
-}
+import type { UserProfile } from '../types/user'
 
 // 认证与用户信息状态
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('token') || '')
   const user = ref<UserProfile | null>(null)
+  try {
+    const savedUser = localStorage.getItem('user')
+    if (savedUser) {
+      user.value = JSON.parse(savedUser)
+    }
+  } catch (e) {
+    console.error('Failed to parse user from localStorage', e)
+  }
+
   const loading = ref(false)
 
   const isAuthenticated = computed(() => Boolean(token.value))
@@ -24,6 +27,7 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = result.token
       user.value = result.user
       localStorage.setItem('token', result.token)
+      localStorage.setItem('user', JSON.stringify(result.user))
     } finally {
       loading.value = false
     }
@@ -36,6 +40,7 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = result.token
       user.value = result.user
       localStorage.setItem('token', result.token)
+      localStorage.setItem('user', JSON.stringify(result.user))
     } finally {
       loading.value = false
     }
@@ -43,13 +48,23 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function fetchProfile() {
     if (!token.value) return
-    user.value = await profileRequest()
+    try {
+      const profile = await profileRequest()
+      user.value = profile
+      localStorage.setItem('user', JSON.stringify(profile))
+    } catch (error) {
+      console.error('Fetch profile failed', error)
+      // 如果获取用户信息失败（可能是 token 过期），考虑是否要自动登出
+      // 这里暂时只记录错误，交给调用方处理
+      throw error
+    }
   }
 
   function logout() {
     token.value = ''
     user.value = null
     localStorage.removeItem('token')
+    localStorage.removeItem('user')
   }
 
   return {

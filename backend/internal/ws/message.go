@@ -1,6 +1,6 @@
 package ws
 
-// Message: 客户端与服务器之间的消息
+// Message: 客户端与服务器之间的消息协议
 type WSMessage struct {
 	// 消息类型
 	Type    string  `json:"type"`     // single / group / heartbeat
