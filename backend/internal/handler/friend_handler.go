@@ -6,6 +6,7 @@ import (
 
 	"gochat/internal/model"
 	"gochat/internal/pkg/db"
+	"gochat/internal/ws"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -19,6 +20,10 @@ type friendRequestAction struct {
 	ToUserID int64 `json:"toUserId" binding:"required"`
 }
 
+type friendAction struct {
+	FriendID int64 `json:"friendId" binding:"required"`
+}
+
 type handleFriendRequest struct {
 	RequestID int64  `json:"requestId" binding:"required"`
 	Action    string `json:"action" binding:"required,oneof=accept reject"`
@@ -30,6 +35,8 @@ type userSearchResult struct {
 	Nickname string `json:"nickname"`
 	Avatar   string `json:"avatar"`
 	IsFriend bool   `json:"isFriend"`
+	Pending  bool   `json:"pending"`
+	PendingFromMe bool `json:"pendingFromMe"`
 }
 
 // SearchUser 搜索用户
@@ -63,6 +70,21 @@ func SearchUser(c *gin.Context) {
 		// Check if friend
 		var count int64
 		dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, u.ID).Count(&count)
+		pending := false
+		pendingFromMe := false
+		if count == 0 {
+			var pendingReq model.FriendRequest
+			err := dbConn.
+				Where("status = 0 AND ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))",
+					currentUserID, u.ID, u.ID, currentUserID).
+				First(&pendingReq).Error
+			if err == nil {
+				pending = true
+				if pendingReq.FromUserID == currentUserID {
+					pendingFromMe = true
+				}
+			}
+		}
 
 		nickname := profile.Nickname
 		if nickname == "" {
@@ -75,6 +97,8 @@ func SearchUser(c *gin.Context) {
 			Nickname: nickname,
 			Avatar:   profile.Avatar,
 			IsFriend: count > 0,
+			Pending:  pending,
+			PendingFromMe: pendingFromMe,
 		})
 	}
 
@@ -110,6 +134,12 @@ func SendFriendRequest(c *gin.Context) {
 	err := dbConn.Where("from_user_id = ? AND to_user_id = ? AND status = 0", currentUserID, req.ToUserID).First(&existingReq).Error
 	if err == nil {
 		c.JSON(200, gin.H{"message": "request already sent"})
+		return
+	}
+	// Check if target already requested current user
+	var reverseReq model.FriendRequest
+	if err := dbConn.Where("from_user_id = ? AND to_user_id = ? AND status = 0", req.ToUserID, currentUserID).First(&reverseReq).Error; err == nil {
+		c.JSON(400, gin.H{"error": "user already requested you"})
 		return
 	}
 
@@ -233,6 +263,72 @@ func HandleFriendRequest(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "success"})
 }
 
+// DeleteFriend 删除好友（双向）
+func DeleteFriend(c *gin.Context) {
+	var req friendAction
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	currentUserID := c.GetInt64("userID")
+	if req.FriendID <= 0 {
+		c.JSON(400, gin.H{"error": "invalid friendId"})
+		return
+	}
+	dbConn := db.GetDB()
+	if err := dbConn.Where("(user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)",
+		currentUserID, req.FriendID, req.FriendID, currentUserID).
+		Delete(&model.Friend{}).Error; err != nil {
+		c.JSON(500, gin.H{"error": "delete failed"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "ok"})
+}
+
+// BlockFriend 拉黑好友（单向）
+func BlockFriend(c *gin.Context) {
+	var req friendAction
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	currentUserID := c.GetInt64("userID")
+	if req.FriendID <= 0 {
+		c.JSON(400, gin.H{"error": "invalid friendId"})
+		return
+	}
+	dbConn := db.GetDB()
+	if err := dbConn.Model(&model.Friend{}).
+		Where("user_id = ? AND friend_id = ?", currentUserID, req.FriendID).
+		Update("status", 0).Error; err != nil {
+		c.JSON(500, gin.H{"error": "block failed"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "ok"})
+}
+
+// UnblockFriend 解除拉黑
+func UnblockFriend(c *gin.Context) {
+	var req friendAction
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+	currentUserID := c.GetInt64("userID")
+	if req.FriendID <= 0 {
+		c.JSON(400, gin.H{"error": "invalid friendId"})
+		return
+	}
+	dbConn := db.GetDB()
+	if err := dbConn.Model(&model.Friend{}).
+		Where("user_id = ? AND friend_id = ?", currentUserID, req.FriendID).
+		Update("status", 1).Error; err != nil {
+		c.JSON(500, gin.H{"error": "unblock failed"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "ok"})
+}
+
 // UpdateProfile 更新个人信息
 func UpdateProfile(c *gin.Context) {
 	var req struct {
@@ -323,6 +419,7 @@ func GetContacts(c *gin.Context) {
 			ID:     fmt.Sprintf("u_%d", account.ID),
 			Name:   nickname,
 			Avatar: profile.Avatar,
+			Online: ws.IsOnline(uint64(account.ID)),
 		})
 	}
 

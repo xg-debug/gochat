@@ -44,7 +44,10 @@ async function onRegister() {
     await auth.register(form.username, form.password, form.nickname)
     if (auth.isAuthenticated) {
       ElMessage.success('注册成功')
-      // router.push('/chat')
+      auth.logout()
+      mode.value = 'login'
+      form.password = ''
+      form.confirmPassword = ''
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : '注册失败'
@@ -101,21 +104,23 @@ async function onRegister() {
   align-items: center;
   justify-content: center;
   height: 100vh;
-  background: linear-gradient(135deg, #0f172a, #1e293b);
+  background: #eef1f5;
 }
 
 .login-card {
   width: 360px;
   padding: 32px;
-  background: #0b1220;
-  border-radius: 16px;
-  color: #e2e8f0;
-  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.4);
+  background: #fff;
+  border-radius: 14px;
+  color: #111827;
+  box-shadow: 0 16px 30px rgba(15, 23, 42, 0.1);
 }
 
 .login-title {
   font-size: 20px;
   margin-bottom: 20px;
   text-align: center;
+  color: #07c160;
+  font-weight: 600;
 }
 </style>

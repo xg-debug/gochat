@@ -28,7 +28,11 @@ function formatTime() {
         :class="{ active: item.id === chat.activeConversationId }"
         @click="handleSelect(item.id)"
       >
-        <div class="conversation-avatar">{{ item.name.slice(0, 1) }}</div>
+        <div class="conversation-avatar">
+          <img v-if="item.avatar" :src="item.avatar" />
+          <span v-else>{{ item.name.slice(0, 1) }}</span>
+          <span v-if="item.online" class="status-dot"></span>
+        </div>
         <div class="conversation-body">
           <div class="conversation-row">
             <div class="conversation-name">{{ item.name }}</div>
@@ -52,27 +56,46 @@ function formatTime() {
 .conversation-item {
   display: flex;
   gap: 12px;
-  padding: 10px;
-  border-radius: 10px;
+  padding: 12px 14px;
+  border-radius: 8px;
   cursor: pointer;
   transition: background 0.2s;
 }
 
 .conversation-item.active,
 .conversation-item:hover {
-  background: #e9eef4;
+  background: #e9f5ee;
 }
 
 .conversation-avatar {
   width: 40px;
   height: 40px;
-  border-radius: 12px;
-  background: #111827;
+  border-radius: 6px;
+  background: #d9dde3;
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 600;
+  overflow: hidden;
+  position: relative;
+}
+
+.conversation-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.status-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #22c55e;
+  border-radius: 50%;
+  right: -2px;
+  bottom: -2px;
+  border: 2px solid #f7f7f7;
 }
 
 .conversation-body {
@@ -92,6 +115,7 @@ function formatTime() {
 .conversation-name {
   font-size: 14px;
   color: #111827;
+  font-weight: 500;
 }
 
 .conversation-time {

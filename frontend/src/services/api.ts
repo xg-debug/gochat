@@ -68,12 +68,13 @@ export async function fetchConversations(): Promise<Conversation[]> {
       avatar: string
       lastMessage: string
       unread: number
+      online?: boolean
     }[]
   >('/api/conversations')
 }
 
 export async function fetchContacts(): Promise<Contact[]> {
-  return await request<{ id: string; name: string; avatar: string }[]>(
+  return await request<{ id: string; name: string; avatar: string; online?: boolean }[]>(
     '/api/contacts',
   )
 }
@@ -84,9 +85,9 @@ export async function fetchMessages(conversationId: string): Promise<Message[]> 
       id: string
       fromId: string
       content: string
-      contentType: 'text' | 'file' | 'image' | 'video'
+      contentType: 'text' | 'file' | 'image' | 'video' | 'audio'
       time: number
-      status: 'sent' | 'delivered' | 'read'
+      status: 'sent' | 'delivered' | 'read' | 'revoked'
     }[]
   >(`/api/messages?conversationId=${conversationId}`)
 }
@@ -97,6 +98,8 @@ export type SearchUserResult = {
   nickname: string
   avatar: string
   isFriend: boolean
+  pending: boolean
+  pendingFromMe: boolean
 }
 
 export async function searchUser(keyword: string) {
@@ -123,10 +126,61 @@ export async function listFriendRequests() {
   return await request<FriendRequestItem[]>('/api/friend/requests')
 }
 
+export type GroupItem = {
+  id: number
+  name: string
+  avatar?: string
+  notice?: string
+  role?: number
+}
+
+export async function searchGroup(keyword: string) {
+  return await request<GroupItem[]>(`/api/group/search?keyword=${encodeURIComponent(keyword)}`)
+}
+
+export async function createGroup(name: string) {
+  return await request<GroupItem>('/api/group/create', {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+}
+
+export async function joinGroup(groupId: number) {
+  return await request<{ message: string }>('/api/group/join', {
+    method: 'POST',
+    body: JSON.stringify({ groupId }),
+  })
+}
+
+export async function listGroups() {
+  return await request<GroupItem[]>('/api/groups')
+}
+
 export async function handleFriendRequest(requestId: number, action: 'accept' | 'reject') {
   return await request<{ message: string }>('/api/friend/handle', {
     method: 'POST',
     body: JSON.stringify({ requestId, action }),
+  })
+}
+
+export async function deleteFriend(friendId: number) {
+  return await request<{ message: string }>('/api/friend/delete', {
+    method: 'POST',
+    body: JSON.stringify({ friendId }),
+  })
+}
+
+export async function blockFriend(friendId: number) {
+  return await request<{ message: string }>('/api/friend/block', {
+    method: 'POST',
+    body: JSON.stringify({ friendId }),
+  })
+}
+
+export async function unblockFriend(friendId: number) {
+  return await request<{ message: string }>('/api/friend/unblock', {
+    method: 'POST',
+    body: JSON.stringify({ friendId }),
   })
 }
 
@@ -184,4 +238,110 @@ export async function uploadChatImage(file: File) {
 
   const data = await response.json()
   return data.url as string
+}
+
+export async function uploadChatFile(file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const token = localStorage.getItem('token') || ''
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch('/api/upload/chat/file', {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error('上传失败')
+  }
+  const data = await response.json()
+  return data.url as string
+}
+
+export async function uploadChatAudio(file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const token = localStorage.getItem('token') || ''
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch('/api/upload/chat/audio', {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error('上传失败')
+  }
+  const data = await response.json()
+  return data.url as string
+}
+
+export async function uploadGroupAvatar(file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const token = localStorage.getItem('token') || ''
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch('/api/upload/group/avatar', {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error('上传失败')
+  }
+  const data = await response.json()
+  return data.url as string
+}
+
+export async function getGroupProfile(groupId: number) {
+  return await request<GroupItem>(`/api/group/profile?groupId=${groupId}`)
+}
+
+export async function updateGroupProfile(data: { groupId: number; name?: string; avatar?: string; notice?: string }) {
+  return await request<{ message: string }>('/api/group/profile', {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+}
+
+export type GroupMember = {
+  userId: number
+  nickname: string
+  username: string
+  avatar: string
+  role: number
+}
+
+export async function listGroupMembers(groupId: number) {
+  return await request<GroupMember[]>(`/api/group/members?groupId=${groupId}`)
+}
+
+export async function kickGroupMember(groupId: number, userId: number) {
+  return await request<{ message: string }>('/api/group/kick', {
+    method: 'POST',
+    body: JSON.stringify({ groupId, userId }),
+  })
+}
+
+export async function setGroupAdmin(groupId: number, userId: number, action: 'set' | 'unset') {
+  return await request<{ message: string }>('/api/group/admin', {
+    method: 'POST',
+    body: JSON.stringify({ groupId, userId, action }),
+  })
 }

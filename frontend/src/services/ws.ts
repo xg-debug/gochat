@@ -1,5 +1,5 @@
 export type WsMessage = {
-  type: 'single' | 'group' | 'heartbeat'
+  type: 'single' | 'group' | 'heartbeat' | 'ack' | 'read' | 'revoke' | 'call'
   from_id: number
   to_id: number
   payload: string
@@ -97,8 +97,9 @@ export class WsClient {
 
 export type ChatPayload = {
   content: string
-  contentType: 'text' | 'image' | 'file' | 'video'
+  contentType: 'text' | 'image' | 'file' | 'video' | 'audio'
   extra?: Record<string, unknown>
+  tempId?: string
 }
 
 export function encodePayload(payload: ChatPayload) {

@@ -10,6 +10,7 @@ import (
 	"gochat/internal/pkg/auth"
 	"gochat/internal/pkg/db"
 	zlog "gochat/internal/pkg/zlog"
+	"gochat/internal/ws"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -37,6 +38,7 @@ type contactResponse struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Avatar string `json:"avatar"`
+	Online bool   `json:"online"`
 }
 
 type conversationResponse struct {
@@ -45,6 +47,7 @@ type conversationResponse struct {
 	Avatar      string `json:"avatar"`
 	LastMessage string `json:"lastMessage"`
 	Unread      int    `json:"unread"`
+	Online      bool   `json:"online"`
 }
 
 type messageResponse struct {
@@ -259,6 +262,7 @@ func Contacts(c *gin.Context) {
 			ID:     fmt.Sprintf("u_%d", account.ID),
 			Name:   name,
 			Avatar: profile.Avatar,
+			Online: ws.IsOnline(uint64(account.ID)),
 		})
 	}
 	c.JSON(200, result)
@@ -275,14 +279,21 @@ func Conversations(c *gin.Context) {
 		c.JSON(401, gin.H{"error": "invalid token"})
 		return
 	}
-	var accounts []model.UserAccount
-	if err := dbConn.Where("id <> ?", userID).Order("id asc").Find(&accounts).Error; err != nil {
+	var friends []model.Friend
+	if err := dbConn.Where("user_id = ? AND status = 1", userID).Find(&friends).Error; err != nil {
 		c.JSON(500, gin.H{"error": "db error"})
 		return
 	}
-	ids := make([]int64, 0, len(accounts))
-	for _, account := range accounts {
-		ids = append(ids, account.ID)
+	ids := make([]int64, 0, len(friends))
+	for _, f := range friends {
+		ids = append(ids, f.FriendID)
+	}
+	var accounts []model.UserAccount
+	if len(ids) > 0 {
+		if err := dbConn.Where("id in ?", ids).Order("id asc").Find(&accounts).Error; err != nil {
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
 	}
 	profileMap := map[int64]model.UserProfile{}
 	if len(ids) > 0 {
@@ -308,12 +319,16 @@ func Conversations(c *gin.Context) {
 			Limit(1).
 			Find(&msg).Error
 		if err == nil && msg.ID > 0 {
-			if msg.MsgType == 2 {
+			if msg.Status == 2 {
+				lastMessage = "[已撤回]"
+			} else if msg.MsgType == 2 {
 				lastMessage = "[图片]"
 			} else if msg.MsgType == 3 {
 				lastMessage = "[文件]"
 			} else if msg.MsgType == 4 {
 				lastMessage = "[视频]"
+			} else if msg.MsgType == 5 {
+				lastMessage = "[语音]"
 			} else {
 				lastMessage = msg.Content
 			}
@@ -324,7 +339,51 @@ func Conversations(c *gin.Context) {
 			Avatar:      profile.Avatar,
 			LastMessage: lastMessage,
 			Unread:      0,
+			Online:      ws.IsOnline(uint64(account.ID)),
 		})
+	}
+	// groups
+	var members []model.GroupMember
+	if err := dbConn.Where("user_id = ?", userID).Find(&members).Error; err == nil && len(members) > 0 {
+		groupIDs := make([]int64, 0, len(members))
+		for _, m := range members {
+			groupIDs = append(groupIDs, m.GroupID)
+		}
+		var groups []model.ChatGroup
+		if err := dbConn.Where("id in ?", groupIDs).Find(&groups).Error; err == nil {
+			for _, g := range groups {
+				lastMessage := ""
+				var msg model.Message
+				err := dbConn.
+					Where("chat_type = ? AND to_id = ?", 2, g.ID).
+					Order("created_at desc").
+					Limit(1).
+					Find(&msg).Error
+				if err == nil && msg.ID > 0 {
+					if msg.Status == 2 {
+						lastMessage = "[已撤回]"
+					} else if msg.MsgType == 2 {
+						lastMessage = "[图片]"
+					} else if msg.MsgType == 3 {
+						lastMessage = "[文件]"
+					} else if msg.MsgType == 4 {
+						lastMessage = "[视频]"
+					} else if msg.MsgType == 5 {
+						lastMessage = "[语音]"
+					} else {
+						lastMessage = msg.Content
+					}
+				}
+				result = append(result, conversationResponse{
+					ID:          fmt.Sprintf("g_%d", g.ID),
+					Name:        g.Name,
+					Avatar:      g.Avatar,
+					LastMessage: lastMessage,
+					Unread:      0,
+					Online:      false,
+				})
+			}
+		}
 	}
 	c.JSON(200, result)
 }
@@ -345,29 +404,59 @@ func Messages(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "conversationId required"})
 		return
 	}
-	peerIDStr := strings.TrimPrefix(conversationID, "u_")
-	peerID, err := parseInt64(peerIDStr)
-	if err != nil || peerID <= 0 {
-		c.JSON(400, gin.H{"error": "invalid conversationId"})
-		return
-	}
 	var messages []model.Message
-	if err := dbConn.
-		Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
-		Order("created_at asc").
-		Find(&messages).Error; err != nil {
-		c.JSON(500, gin.H{"error": "db error"})
-		return
+	if strings.HasPrefix(conversationID, "g_") {
+		groupIDStr := strings.TrimPrefix(conversationID, "g_")
+		groupID, err := parseInt64(groupIDStr)
+		if err != nil || groupID <= 0 {
+			c.JSON(400, gin.H{"error": "invalid conversationId"})
+			return
+		}
+		var count int64
+		dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", groupID, userID).Count(&count)
+		if count == 0 {
+			c.JSON(403, gin.H{"error": "not in group"})
+			return
+		}
+		if err := dbConn.
+			Where("chat_type = ? AND to_id = ?", 2, groupID).
+			Order("created_at asc").
+			Find(&messages).Error; err != nil {
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
+	} else {
+		peerIDStr := strings.TrimPrefix(conversationID, "u_")
+		peerID, err := parseInt64(peerIDStr)
+		if err != nil || peerID <= 0 {
+			c.JSON(400, gin.H{"error": "invalid conversationId"})
+			return
+		}
+		if err := dbConn.
+			Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
+			Order("created_at asc").
+			Find(&messages).Error; err != nil {
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
 	}
 	result := make([]messageResponse, 0, len(messages))
 	for _, msg := range messages {
+		content := msg.Content
+		status := "delivered"
+		if msg.Status == 1 {
+			status = "read"
+		} else if msg.Status == 2 {
+			status = "revoked"
+			content = "[已撤回]"
+		}
 		result = append(result, messageResponse{
 			ID:          fmt.Sprintf("m_%d", msg.ID),
 			FromID:      fmt.Sprintf("u_%d", msg.FromID),
-			Content:     msg.Content,
+			Content:     content,
 			ContentType: msgTypeToContentType(msg.MsgType),
 			Time:        msg.CreatedAt.UnixMilli(),
-			Status:      "delivered",
+			Status:      status,
 		})
 	}
 	c.JSON(200, result)
@@ -387,6 +476,8 @@ func msgTypeToContentType(msgType int8) string {
 		return "file"
 	case 4:
 		return "video"
+	case 5:
+		return "audio"
 	default:
 		return "text"
 	}

@@ -19,6 +19,10 @@ export const useChatStore = defineStore('chat', () => {
     return messageMap.value[activeConversationId.value] || []
   })
 
+  const activeConversation = computed(() => {
+    return conversations.value.find((item) => item.id === activeConversationId.value)
+  })
+
   async function bootstrap() {
     conversations.value = await fetchConversations()
     contacts.value = await fetchContacts()
@@ -45,6 +49,14 @@ export const useChatStore = defineStore('chat', () => {
     )
     if (conversation) {
       conversation.unread = 0
+    }
+    if (conversationId.startsWith('u_')) {
+      const list = messageMap.value[conversationId] || []
+      list.forEach((item) => {
+        if (item.status !== 'revoked') {
+          item.status = 'delivered'
+        }
+      })
     }
   }
 
@@ -103,8 +115,10 @@ export const useChatStore = defineStore('chat', () => {
   ) {
     const conversationId = activeConversationId.value
     if (!conversationId) return
+    const isGroup = conversationId.startsWith('g_')
+    const tempId = `local_${Date.now()}`
     const newMessage: Message = {
-      id: `local_${Date.now()}`,
+      id: tempId,
       fromId: `u_${currentUserId.value || 1}`,
       content,
       contentType,
@@ -119,20 +133,72 @@ export const useChatStore = defineStore('chat', () => {
       (item: Conversation) => item.id === conversationId,
     )
     if (conversation) {
-      conversation.lastMessage = contentType === 'image' ? '[图片]' : content
+      conversation.lastMessage =
+        contentType === 'image'
+          ? '[图片]'
+          : contentType === 'audio'
+            ? '[语音]'
+            : contentType === 'file'
+              ? '[文件]'
+              : contentType === 'video'
+                ? '[视频]'
+                : content
     }
     wsClient.value?.send({
-      type: 'single',
+      type: isGroup ? 'group' : 'single',
       from_id: currentUserId.value || 1,
       to_id: toId,
-      payload: encodePayload({ content, contentType }),
+      payload: encodePayload({ content, contentType, tempId }),
     })
   }
 
+
   function handleIncomingMessage(message: WsMessage) {
+    if (message.type === 'ack') {
+      try {
+        const payload = JSON.parse(atob(message.payload)) as {
+          tempId?: string
+          messageId?: number
+        }
+        if (!payload?.tempId || !payload?.messageId) return
+        Object.keys(messageMap.value).forEach((convId) => {
+          const list = messageMap.value[convId]
+          const msg = list?.find((item) => item.id === payload.tempId)
+          if (msg) {
+            msg.id = `m_${payload.messageId}`
+            msg.status = 'delivered'
+          }
+        })
+      } catch {
+        return
+      }
+      return
+    }
+    if (message.type === 'call') {
+      try {
+        const payload = JSON.parse(message.payload) as Record<string, unknown>
+        window.dispatchEvent(
+          new CustomEvent('call-signal', {
+            detail: {
+              fromId: message.from_id,
+              toId: message.to_id,
+              payload,
+            },
+          }),
+        )
+      } catch {
+        return
+      }
+      return
+    }
+    if (message.type === 'read' || message.type === 'revoke') {
+      return
+    }
     const decoded = decodePayload(message.payload)
     if (!decoded) return
-    const conversationId = message.from_id ? `u_${message.from_id}` : 'system'
+    const senderName = decoded.extra?.fromName as string | undefined
+    const conversationId =
+      message.type === 'group' ? `g_${message.to_id}` : message.from_id ? `u_${message.from_id}` : 'system'
     const incoming: Message = {
       id: `ws_${Date.now()}`,
       fromId: `u_${message.from_id}`,
@@ -150,7 +216,10 @@ export const useChatStore = defineStore('chat', () => {
     )
     if (!conversation) {
       const contact = contacts.value.find((item) => item.id === conversationId)
-      const name = contact?.name || (message.from_id ? `用户${message.from_id}` : '系统通知')
+      const name =
+        message.type === 'group'
+          ? `群聊${message.to_id}`
+          : contact?.name || senderName || (message.from_id ? `用户${message.from_id}` : '系统通知')
       const avatar = contact?.avatar || ''
       conversation = {
         id: conversationId,
@@ -158,14 +227,42 @@ export const useChatStore = defineStore('chat', () => {
         avatar,
         lastMessage: incoming.content,
         unread: 0,
+        online: message.type === 'group' ? false : true,
       }
       conversations.value.unshift(conversation)
     }
     conversation.lastMessage =
-      incoming.contentType === 'image' ? '[图片]' : incoming.content
+      incoming.contentType === 'image'
+        ? '[图片]'
+        : incoming.contentType === 'audio'
+          ? '[语音]'
+          : incoming.contentType === 'file'
+            ? '[文件]'
+            : incoming.contentType === 'video'
+              ? '[视频]'
+              : incoming.content
     if (conversationId !== activeConversationId.value) {
       conversation.unread += 1
+      window.dispatchEvent(
+        new CustomEvent('incoming-message', {
+          detail: {
+            conversationId,
+            name: message.type === 'group' ? conversation.name : senderName || conversation.name,
+            content: incoming.content,
+            contentType: incoming.contentType,
+          },
+        }),
+      )
     }
+  }
+
+  function sendCallSignal(toId: number, payload: Record<string, unknown>) {
+    wsClient.value?.send({
+      type: 'call',
+      from_id: currentUserId.value || 1,
+      to_id: toId,
+      payload: JSON.stringify(payload),
+    })
   }
 
   return {
@@ -173,12 +270,14 @@ export const useChatStore = defineStore('chat', () => {
     contacts,
     activeConversationId,
     activeMessages,
+    activeConversation,
     bootstrap,
     selectConversation,
     startConversation,
     connect,
     disconnect,
     sendMessage,
+    sendCallSignal,
     reset,
   }
 })
