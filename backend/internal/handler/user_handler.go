@@ -28,10 +28,12 @@ type registerRequest struct {
 }
 
 type userResponse struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Nickname string `json:"nickname"`
-	Avatar   string `json:"avatar"`
+	ID        int64  `json:"id"`
+	Username  string `json:"username"`
+	Nickname  string `json:"nickname"`
+	Avatar    string `json:"avatar"`
+	Signature string `json:"signature"`
+	Gender    int8   `json:"gender"`
 }
 
 type contactResponse struct {
@@ -108,10 +110,12 @@ func Login(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"token": token,
 		"user": userResponse{
-			ID:       account.ID,
-			Username: account.Username,
-			Nickname: nickname,
-			Avatar:   profile.Avatar,
+			ID:        account.ID,
+			Username:  account.Username,
+			Nickname:  nickname,
+			Avatar:    profile.Avatar,
+			Signature: profile.Signature,
+			Gender:    profile.Gender,
 		},
 	})
 }
@@ -181,10 +185,12 @@ func Register(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"token": token,
 		"user": userResponse{
-			ID:       account.ID,
-			Username: account.Username,
-			Nickname: profile.Nickname,
-			Avatar:   profile.Avatar,
+			ID:        account.ID,
+			Username:  account.Username,
+			Nickname:  profile.Nickname,
+			Avatar:    profile.Avatar,
+			Signature: profile.Signature,
+			Gender:    profile.Gender,
 		},
 	})
 }
@@ -215,10 +221,84 @@ func Profile(c *gin.Context) {
 		nickname = account.Username
 	}
 	c.JSON(200, userResponse{
-		ID:       account.ID,
-		Username: account.Username,
-		Nickname: nickname,
-		Avatar:   profile.Avatar,
+		ID:        account.ID,
+		Username:  account.Username,
+		Nickname:  nickname,
+		Avatar:    profile.Avatar,
+		Signature: profile.Signature,
+		Gender:    profile.Gender,
+	})
+}
+
+// UpdateProfile 更新个人信息
+func UpdateProfile(c *gin.Context) {
+	var req struct {
+		Nickname  *string `json:"nickname"`
+		Avatar    *string `json:"avatar"`
+		Signature *string `json:"signature"`
+		Gender    *int8   `json:"gender"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	currentUserID := c.GetInt64("userID")
+	dbConn := db.GetDB()
+
+	var profile model.UserProfile
+	if err := dbConn.Where("user_id = ?", currentUserID).First(&profile).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Create if not exists
+			profile = model.UserProfile{
+				UserID: currentUserID,
+			}
+			dbConn.Create(&profile)
+		} else {
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
+	}
+
+	updates := map[string]interface{}{}
+	if req.Nickname != nil {
+		updates["nickname"] = strings.TrimSpace(*req.Nickname)
+	}
+	if req.Avatar != nil {
+		updates["avatar"] = strings.TrimSpace(*req.Avatar)
+	}
+	if req.Signature != nil {
+		updates["signature"] = strings.TrimSpace(*req.Signature)
+	}
+	if req.Gender != nil {
+		updates["gender"] = *req.Gender
+	}
+
+	if len(updates) > 0 {
+		if err := dbConn.Model(&profile).Updates(updates).Error; err != nil {
+			c.JSON(500, gin.H{"error": "update failed"})
+			return
+		}
+	}
+
+	// Refresh profile data
+	dbConn.Where("user_id = ?", currentUserID).First(&profile)
+
+	var account model.UserAccount
+	dbConn.First(&account, currentUserID)
+
+	nickname := strings.TrimSpace(profile.Nickname)
+	if nickname == "" {
+		nickname = account.Username
+	}
+	c.JSON(200, userResponse{
+		ID:        account.ID,
+		Username:  account.Username,
+		Nickname:  nickname,
+		Avatar:    profile.Avatar,
+		Signature: profile.Signature,
+		Gender:    profile.Gender,
 	})
 }
 
@@ -379,6 +459,123 @@ func Conversations(c *gin.Context) {
 					Name:        g.Name,
 					Avatar:      g.Avatar,
 					LastMessage: lastMessage,
+					Unread:      0,
+					Online:      false,
+				})
+			}
+		}
+	}
+	c.JSON(200, result)
+}
+
+func SearchConversations(c *gin.Context) {
+	keyword := strings.TrimSpace(c.Query("keyword"))
+	if keyword == "" {
+		Conversations(c)
+		return
+	}
+	dbConn := db.GetDB()
+	if dbConn == nil {
+		c.JSON(500, gin.H{"error": "db not ready"})
+		return
+	}
+	userID := int64(c.GetUint64("user_id"))
+	if userID <= 0 {
+		c.JSON(401, gin.H{"error": "invalid token"})
+		return
+	}
+	kwLike := "%" + keyword + "%"
+
+	var friends []model.Friend
+	if err := dbConn.Where("user_id = ? AND status = 1", userID).Find(&friends).Error; err != nil {
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	friendIDs := make([]int64, 0, len(friends))
+	for _, f := range friends {
+		friendIDs = append(friendIDs, f.FriendID)
+	}
+	var accounts []model.UserAccount
+	if len(friendIDs) > 0 {
+		if err := dbConn.Where("id in ? AND username LIKE ?", friendIDs, kwLike).Find(&accounts).Error; err != nil {
+			c.JSON(500, gin.H{"error": "db error"})
+			return
+		}
+		var matchedProfiles []model.UserProfile
+		_ = dbConn.Where("user_id in ? AND nickname LIKE ?", friendIDs, kwLike).Find(&matchedProfiles).Error
+		profileMatchedIDs := map[int64]bool{}
+		for _, profile := range matchedProfiles {
+			profileMatchedIDs[profile.UserID] = true
+		}
+		if len(profileMatchedIDs) > 0 {
+			exists := map[int64]bool{}
+			for _, a := range accounts {
+				exists[a.ID] = true
+			}
+			for id := range profileMatchedIDs {
+				if exists[id] {
+					continue
+				}
+				var acc model.UserAccount
+				if err := dbConn.Where("id = ?", id).First(&acc).Error; err == nil {
+					accounts = append(accounts, acc)
+				}
+			}
+		}
+	}
+	result := make([]conversationResponse, 0, len(accounts))
+	if len(accounts) > 0 {
+		ids := make([]int64, 0, len(accounts))
+		for _, a := range accounts {
+			ids = append(ids, a.ID)
+		}
+		profileMap := map[int64]model.UserProfile{}
+		var profiles []model.UserProfile
+		_ = dbConn.Where("user_id in ?", ids).Find(&profiles).Error
+		for _, p := range profiles {
+			profileMap[p.UserID] = p
+		}
+		for _, account := range accounts {
+			profile := profileMap[account.ID]
+			name := strings.TrimSpace(profile.Nickname)
+			if name == "" {
+				name = account.Username
+			}
+			lastMessage := ""
+			var msg model.Message
+			err := dbConn.
+				Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, account.ID, account.ID, userID).
+				Order("created_at desc").
+				Limit(1).
+				Find(&msg).Error
+			if err == nil && msg.ID > 0 {
+				lastMessage = msg.Content
+			}
+			result = append(result, conversationResponse{
+				ID:          fmt.Sprintf("u_%d", account.ID),
+				Name:        name,
+				Avatar:      profile.Avatar,
+				LastMessage: lastMessage,
+				Unread:      0,
+				Online:      ws.IsOnline(uint64(account.ID)),
+			})
+		}
+	}
+
+	var members []model.GroupMember
+	if err := dbConn.Where("user_id = ?", userID).Find(&members).Error; err == nil && len(members) > 0 {
+		groupIDs := make([]int64, 0, len(members))
+		for _, m := range members {
+			groupIDs = append(groupIDs, m.GroupID)
+		}
+		var groups []model.ChatGroup
+		if err := dbConn.Where("id in ? AND name LIKE ?", groupIDs, kwLike).Find(&groups).Error; err == nil {
+			for _, g := range groups {
+				result = append(result, conversationResponse{
+					ID:          fmt.Sprintf("g_%d", g.ID),
+					Name:        g.Name,
+					Avatar:      g.Avatar,
+					LastMessage: "",
 					Unread:      0,
 					Online:      false,
 				})

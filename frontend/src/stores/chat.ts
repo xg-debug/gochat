@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { Contact, Conversation, Message } from '../types/chat'
-import { fetchContacts, fetchConversations, fetchMessages } from '../services/api'
+import { fetchContacts, fetchConversations, fetchMessages, searchConversations as searchConversationsRequest } from '../services/api'
 import { decodePayload, encodePayload, WsClient, type WsMessage } from '../services/ws'
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
@@ -175,8 +175,18 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     if (message.type === 'call') {
+      let payload: Record<string, unknown> = {}
+      const decoded = decodePayload(message.payload)
+      if (decoded?.extra && typeof decoded.extra === 'object') {
+        payload = decoded.extra as Record<string, unknown>
+      } else {
+        try {
+          payload = JSON.parse(message.payload) as Record<string, unknown>
+        } catch {
+          return
+        }
+      }
       try {
-        const payload = JSON.parse(message.payload) as Record<string, unknown>
         window.dispatchEvent(
           new CustomEvent('call-signal', {
             detail: {
@@ -189,6 +199,32 @@ export const useChatStore = defineStore('chat', () => {
       } catch {
         return
       }
+      return
+    }
+    if (message.type === 'presence') {
+      let online = false
+      const decoded = decodePayload(message.payload)
+      if (decoded?.extra && typeof decoded.extra.online !== 'undefined') {
+        online = Boolean(decoded.extra.online)
+      } else {
+        try {
+          const raw = JSON.parse(message.payload) as { online?: boolean }
+          online = Boolean(raw.online)
+        } catch {
+          online = true
+        }
+      }
+      const userID = `u_${message.from_id}`
+      contacts.value.forEach((item) => {
+        if (item.id === userID) {
+          item.online = online
+        }
+      })
+      conversations.value.forEach((item) => {
+        if (item.id === userID) {
+          item.online = online
+        }
+      })
       return
     }
     if (message.type === 'read' || message.type === 'revoke') {
@@ -241,6 +277,14 @@ export const useChatStore = defineStore('chat', () => {
             : incoming.contentType === 'video'
               ? '[视频]'
               : incoming.content
+    if (message.type === 'single') {
+      conversation.online = true
+      contacts.value.forEach((item) => {
+        if (item.id === conversationId) {
+          item.online = true
+        }
+      })
+    }
     if (conversationId !== activeConversationId.value) {
       conversation.unread += 1
       window.dispatchEvent(
@@ -261,7 +305,36 @@ export const useChatStore = defineStore('chat', () => {
       type: 'call',
       from_id: currentUserId.value || 1,
       to_id: toId,
-      payload: JSON.stringify(payload),
+      payload: encodePayload({
+        content: '',
+        contentType: 'text',
+        extra: payload,
+      }),
+    })
+  }
+
+  async function searchConversations(keyword: string) {
+    const trimmed = keyword.trim()
+    if (!trimmed) {
+      conversations.value = await fetchConversations()
+      return
+    }
+    try {
+      const list = await searchConversationsRequest(trimmed)
+      if (list.length > 0) {
+        conversations.value = list
+        return
+      }
+    } catch {
+      // fallback to local filter below
+    }
+    const fullList = await fetchConversations()
+    const lower = trimmed.toLowerCase()
+    conversations.value = fullList.filter((item) => {
+      return (
+        item.name.toLowerCase().includes(lower) ||
+        item.lastMessage.toLowerCase().includes(lower)
+      )
     })
   }
 
@@ -278,6 +351,7 @@ export const useChatStore = defineStore('chat', () => {
     disconnect,
     sendMessage,
     sendCallSignal,
+    searchConversations,
     reset,
   }
 })

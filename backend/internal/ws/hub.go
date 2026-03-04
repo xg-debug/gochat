@@ -1,6 +1,9 @@
 package ws
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // Hub: 消息中心，统一管理所有在线连接
 type Hub struct {
@@ -38,11 +41,13 @@ func (h *Hub) Run() {
 		case client := <-h.Register:
 			h.mu.Lock()
 			h.Clients[client.UserID] = client
+			h.broadcastPresenceLocked(client.UserID, true)
 			h.mu.Unlock()
 		case client := <-h.Unregister:
 			h.mu.Lock()
 			if _, ok := h.Clients[client.UserID]; ok {
 				delete(h.Clients, client.UserID)
+				h.broadcastPresenceLocked(client.UserID, false)
 				close(client.Send)
 			}
 			h.mu.Unlock()
@@ -57,6 +62,36 @@ func (h *Hub) Run() {
 				}
 			}
 			h.mu.Unlock()
+		}
+	}
+}
+
+func (h *Hub) broadcastPresenceLocked(userID uint64, online bool) {
+	payload := map[string]interface{}{
+		"content":     "",
+		"contentType": "text",
+		"extra": map[string]interface{}{
+			"online": online,
+		},
+	}
+	payloadRaw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	msg := WSMessage{
+		Type:    "presence",
+		FromID:  userID,
+		ToID:    0,
+		Payload: payloadRaw,
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	for _, client := range h.Clients {
+		select {
+		case client.Send <- raw:
+		default:
 		}
 	}
 }

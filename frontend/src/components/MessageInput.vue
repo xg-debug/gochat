@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '../stores/chat'
 import { uploadChatImage, uploadChatFile, uploadChatAudio } from '../services/api'
@@ -8,10 +8,14 @@ const chat = useChatStore()
 const content = ref('')
 const imageInput = ref<HTMLInputElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
-const videoInput = ref<HTMLInputElement | null>(null)
 const recording = ref(false)
+const showEmojiPanel = ref(false)
+const recordStartAt = ref(0)
+const recordSeconds = ref(0)
+let recordTimer: number | null = null
 let mediaRecorder: MediaRecorder | null = null
 let recordChunks: Blob[] = []
+const emojiList = ['😀', '😁', '😂', '🤣', '😊', '😍', '😘', '🤔', '😎', '😭', '👍', '👋', '🎉', '❤️', '🔥', '👏']
 
 function send() {
   if (!content.value.trim()) return
@@ -24,20 +28,37 @@ function send() {
 }
 
 function onImageClick() {
+  showEmojiPanel.value = false
   imageInput.value?.click()
 }
 
 function onFileClick() {
+  showEmojiPanel.value = false
   fileInput.value?.click()
 }
 
-function onAudioClick() {
-  if (recording.value) {
-    mediaRecorder?.stop()
-    recording.value = false
-    return
-  }
+function beginVoiceRecord() {
+  showEmojiPanel.value = false
+  if (recording.value) return
   startRecording()
+}
+
+function endVoiceRecord() {
+  if (!recording.value) return
+  mediaRecorder?.stop()
+  recording.value = false
+  if (recordTimer) {
+    window.clearInterval(recordTimer)
+    recordTimer = null
+  }
+}
+
+function onVoiceClick() {
+  if (recording.value) {
+    endVoiceRecord()
+  } else {
+    beginVoiceRecord()
+  }
 }
 
 async function onImageChange(event: Event) {
@@ -71,32 +92,18 @@ async function onFileChange(event: Event) {
 
   try {
     const url = await uploadChatFile(file)
-    chat.sendMessage(toId, url, 'file')
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : '上传失败'
-    ElMessage.error(msg)
-  } finally {
-    input.value = ''
-  }
-}
-
-
-function onVideoClick() {
-  videoInput.value?.click()
-}
-
-async function onVideoChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  if (!input.files || !input.files[0]) return
-  const file = input.files[0]
-  const conversationId = chat.activeConversationId
-  if (!conversationId) return
-  const toId = Number(conversationId.replace(/^[ug]_/, ''))
-  if (!toId) return
-
-  try {
-    const url = await uploadChatFile(file)
-    chat.sendMessage(toId, url, 'video')
+    const contentType = file.type.startsWith('image/')
+      ? 'image'
+      : file.type.startsWith('audio/')
+        ? 'audio'
+        : file.type.startsWith('video/')
+          ? 'video'
+          : 'file'
+    if (contentType === 'audio') {
+      chat.sendMessage(toId, JSON.stringify({ url, duration: 0 }), 'audio')
+    } else {
+      chat.sendMessage(toId, url, contentType)
+    }
   } catch (error) {
     const msg = error instanceof Error ? error.message : '上传失败'
     ElMessage.error(msg)
@@ -108,32 +115,59 @@ async function onVideoChange(event: Event) {
 async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    recordStartAt.value = Date.now()
+    recordSeconds.value = 0
     recordChunks = []
-    mediaRecorder = new MediaRecorder(stream)
+    const preferredType = MediaRecorder.isTypeSupported('audio/mp4')
+      ? 'audio/mp4'
+      : MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : ''
+    mediaRecorder = preferredType
+      ? new MediaRecorder(stream, { mimeType: preferredType })
+      : new MediaRecorder(stream)
     mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) recordChunks.push(e.data)
     }
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach((t) => t.stop())
-      const blob = new Blob(recordChunks, { type: 'audio/webm' })
-      const file = new File([blob], `audio_${Date.now()}.webm`, { type: 'audio/webm' })
+      const mime = mediaRecorder?.mimeType || 'audio/webm'
+      const blob = new Blob(recordChunks, { type: mime })
+      if (blob.size < 1024) {
+        ElMessage.warning('录音过短')
+        return
+      }
+      const ext = mime.includes('mp4') ? 'm4a' : 'webm'
+      const file = new File([blob], `audio_${Date.now()}.${ext}`, { type: mime })
+      const duration = Math.max(1, Math.round((Date.now() - recordStartAt.value) / 1000))
       const conversationId = chat.activeConversationId
       if (!conversationId) return
       const toId = Number(conversationId.replace(/^[ug]_/, ''))
       if (!toId) return
       try {
         const url = await uploadChatAudio(file)
-        chat.sendMessage(toId, url, 'audio')
+        chat.sendMessage(toId, JSON.stringify({ url, duration }), 'audio')
       } catch (error) {
         const msg = error instanceof Error ? error.message : '上传失败'
         ElMessage.error(msg)
       }
     }
-    mediaRecorder.start()
+    mediaRecorder.start(200)
     recording.value = true
+    recordTimer = window.setInterval(() => {
+      recordSeconds.value += 1
+    }, 1000)
   } catch {
     ElMessage.error('无法获取麦克风')
   }
+}
+
+function onEmojiClick() {
+  showEmojiPanel.value = !showEmojiPanel.value
+}
+
+function appendEmoji(emoji: string) {
+  content.value += emoji
 }
 
 async function onPaste(event: ClipboardEvent) {
@@ -157,12 +191,23 @@ async function onPaste(event: ClipboardEvent) {
     }
   }
 }
+
+onBeforeUnmount(() => {
+  if (recordTimer) {
+    window.clearInterval(recordTimer)
+    recordTimer = null
+  }
+  if (recording.value) {
+    mediaRecorder?.stop()
+    recording.value = false
+  }
+})
 </script>
 
 <template>
   <div class="message-input">
     <div class="message-toolbar">
-      <button class="icon-btn" title="表情">
+      <button class="icon-btn" title="表情" @click="onEmojiClick">
         <svg viewBox="0 0 24 24" class="icon">
           <path
             fill="currentColor"
@@ -170,7 +215,12 @@ async function onPaste(event: ClipboardEvent) {
           />
         </svg>
       </button>
-      <button class="icon-btn" :class="{ active: recording }" title="语音" @click="onAudioClick">
+      <button
+        class="icon-btn voice-btn"
+        :class="{ active: recording }"
+        :title="recording ? '点击结束录音并发送' : '点击开始录音'"
+        @click="onVoiceClick"
+      >
         <svg viewBox="0 0 24 24" class="icon">
           <path
             fill="currentColor"
@@ -186,7 +236,7 @@ async function onPaste(event: ClipboardEvent) {
           />
         </svg>
       </button>
-      <button class="icon-btn" title="文件" @click="onFileClick">
+      <button class="icon-btn" title="文件(图片/文档/视频)" @click="onFileClick">
         <svg viewBox="0 0 24 24" class="icon">
           <path
             fill="currentColor"
@@ -194,13 +244,13 @@ async function onPaste(event: ClipboardEvent) {
           />
         </svg>
       </button>
-      <button class="icon-btn" title="视频" @click="onVideoClick">
-        <svg viewBox="0 0 24 24" class="icon">
-          <path
-            fill="currentColor"
-            d="M4 6h10a2 2 0 0 1 2 2v1.4l4-2.4v10l-4-2.4V16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"
-          />
-        </svg>
+    </div>
+    <div v-if="recording" class="recording-tip">
+      正在录音 {{ recordSeconds }}s，松开按钮发送
+    </div>
+    <div v-if="showEmojiPanel" class="emoji-panel">
+      <button v-for="emoji in emojiList" :key="emoji" class="emoji-item" @click="appendEmoji(emoji)">
+        {{ emoji }}
       </button>
     </div>
     <input
@@ -215,13 +265,6 @@ async function onPaste(event: ClipboardEvent) {
       type="file"
       style="display: none"
       @change="onFileChange"
-    />
-    <input
-      ref="videoInput"
-      type="file"
-      accept="video/*"
-      style="display: none"
-      @change="onVideoChange"
     />
     <el-input
       v-model="content"
@@ -251,6 +294,29 @@ async function onPaste(event: ClipboardEvent) {
   gap: 8px;
 }
 
+.emoji-panel {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.emoji-item {
+  border: none;
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 4px 0;
+  cursor: pointer;
+  font-size: 18px;
+}
+
+.emoji-item:hover {
+  background: #eef2ff;
+}
+
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -273,6 +339,19 @@ async function onPaste(event: ClipboardEvent) {
 .icon-btn.active {
   border-color: #ef4444;
   color: #ef4444;
+}
+
+.voice-btn.active {
+  background: #fee2e2;
+}
+
+.recording-tip {
+  font-size: 12px;
+  color: #ef4444;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 .icon-btn .icon {

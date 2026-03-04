@@ -339,6 +339,11 @@ type adminRequest struct {
 	Action  string `json:"action"`
 }
 
+type inviteGroupRequest struct {
+	GroupID int64 `json:"groupId"`
+	UserID  int64 `json:"userId"`
+}
+
 func SetGroupAdmin(c *gin.Context) {
 	var req adminRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -373,6 +378,127 @@ func SetGroupAdmin(c *gin.Context) {
 		Where("group_id = ? AND user_id = ?", req.GroupID, req.UserID).
 		Update("role", role).Error; err != nil {
 		c.JSON(500, gin.H{"error": "update failed"})
+		return
+	}
+	c.JSON(200, gin.H{"message": "ok"})
+}
+
+func ListInviteableFriends(c *gin.Context) {
+	groupIDStr := strings.TrimSpace(c.Query("groupId"))
+	if groupIDStr == "" {
+		c.JSON(400, gin.H{"error": "groupId required"})
+		return
+	}
+	var groupID int64
+	if _, err := fmt.Sscanf(groupIDStr, "%d", &groupID); err != nil || groupID <= 0 {
+		c.JSON(400, gin.H{"error": "invalid groupId"})
+		return
+	}
+	currentUserID := c.GetInt64("userID")
+	dbConn := db.GetDB()
+	var count int64
+	dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", groupID, currentUserID).Count(&count)
+	if count == 0 {
+		c.JSON(403, gin.H{"error": "not in group"})
+		return
+	}
+
+	var friends []model.Friend
+	if err := dbConn.Where("user_id = ? AND status = 1", currentUserID).Find(&friends).Error; err != nil {
+		c.JSON(500, gin.H{"error": "db error"})
+		return
+	}
+	friendIDs := make([]int64, 0, len(friends))
+	for _, f := range friends {
+		friendIDs = append(friendIDs, f.FriendID)
+	}
+	if len(friendIDs) == 0 {
+		c.JSON(200, []groupMemberResponse{})
+		return
+	}
+	var members []model.GroupMember
+	_ = dbConn.Where("group_id = ?", groupID).Find(&members).Error
+	memberMap := map[int64]bool{}
+	for _, m := range members {
+		memberMap[m.UserID] = true
+	}
+
+	var accounts []model.UserAccount
+	dbConn.Where("id in ?", friendIDs).Find(&accounts)
+	accountMap := map[int64]model.UserAccount{}
+	for _, a := range accounts {
+		accountMap[a.ID] = a
+	}
+	var profiles []model.UserProfile
+	dbConn.Where("user_id in ?", friendIDs).Find(&profiles)
+	profileMap := map[int64]model.UserProfile{}
+	for _, p := range profiles {
+		profileMap[p.UserID] = p
+	}
+
+	result := make([]groupMemberResponse, 0, len(friendIDs))
+	for _, id := range friendIDs {
+		if memberMap[id] {
+			continue
+		}
+		account, ok := accountMap[id]
+		if !ok {
+			continue
+		}
+		profile := profileMap[id]
+		nickname := profile.Nickname
+		if nickname == "" {
+			nickname = account.Username
+		}
+		result = append(result, groupMemberResponse{
+			UserID:   id,
+			Nickname: nickname,
+			Username: account.Username,
+			Avatar:   profile.Avatar,
+			Role:     0,
+		})
+	}
+	c.JSON(200, result)
+}
+
+func InviteGroupMember(c *gin.Context) {
+	var req inviteGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": "invalid request"})
+		return
+	}
+	if req.GroupID <= 0 || req.UserID <= 0 {
+		c.JSON(400, gin.H{"error": "invalid params"})
+		return
+	}
+	currentUserID := c.GetInt64("userID")
+	dbConn := db.GetDB()
+	var count int64
+	dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", req.GroupID, currentUserID).Count(&count)
+	if count == 0 {
+		c.JSON(403, gin.H{"error": "not in group"})
+		return
+	}
+	var friendCount int64
+	dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ? AND status = 1", currentUserID, req.UserID).Count(&friendCount)
+	if friendCount == 0 {
+		c.JSON(403, gin.H{"error": "can only invite friends"})
+		return
+	}
+	var memberCount int64
+	dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", req.GroupID, req.UserID).Count(&memberCount)
+	if memberCount > 0 {
+		c.JSON(200, gin.H{"message": "already in group"})
+		return
+	}
+	member := model.GroupMember{
+		GroupID:   req.GroupID,
+		UserID:    req.UserID,
+		Role:      0,
+		CreatedAt: time.Now(),
+	}
+	if err := dbConn.Create(&member).Error; err != nil {
+		c.JSON(500, gin.H{"error": "invite failed"})
 		return
 	}
 	c.JSON(200, gin.H{"message": "ok"})

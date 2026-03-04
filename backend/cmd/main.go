@@ -78,6 +78,7 @@ func main() {
 		authorized.GET("/contacts", handler.GetContacts) // 使用新的 GetContacts 实现
 
 		authorized.GET("/conversations", handler.Conversations)
+		authorized.GET("/conversations/search", handler.SearchConversations)
 		authorized.GET("/messages", handler.Messages)
 
 		// 群聊相关
@@ -90,6 +91,8 @@ func main() {
 		authorized.GET("/group/members", handler.ListGroupMembers)
 		authorized.POST("/group/kick", handler.KickGroupMember)
 		authorized.POST("/group/admin", handler.SetGroupAdmin)
+		authorized.GET("/group/inviteable", handler.ListInviteableFriends)
+		authorized.POST("/group/invite", handler.InviteGroupMember)
 	}
 
 	r.GET("/ws", auth.AuthMiddleware(), handler.WSHandler(hub, zlog.GetLogger()))

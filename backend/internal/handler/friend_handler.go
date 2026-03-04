@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"errors"
 	"fmt"
 
 	"gochat/internal/model"
@@ -9,7 +8,6 @@ import (
 	"gochat/internal/ws"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type searchUserRequest struct {
@@ -329,69 +327,7 @@ func UnblockFriend(c *gin.Context) {
 	c.JSON(200, gin.H{"message": "ok"})
 }
 
-// UpdateProfile 更新个人信息
-func UpdateProfile(c *gin.Context) {
-	var req struct {
-		Nickname  string `json:"nickname"`
-		Avatar    string `json:"avatar"`
-		Signature string `json:"signature"`
-		Gender    int8   `json:"gender"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-
-	currentUserID := c.GetInt64("userID")
-	dbConn := db.GetDB()
-
-	var profile model.UserProfile
-	if err := dbConn.Where("user_id = ?", currentUserID).First(&profile).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Create if not exists
-			profile = model.UserProfile{
-				UserID: currentUserID,
-			}
-			dbConn.Create(&profile)
-		} else {
-			c.JSON(500, gin.H{"error": "db error"})
-			return
-		}
-	}
-
-	updates := map[string]interface{}{}
-	if req.Nickname != "" {
-		updates["nickname"] = req.Nickname
-	}
-	if req.Avatar != "" {
-		updates["avatar"] = req.Avatar
-	}
-	if req.Signature != "" {
-		updates["signature"] = req.Signature
-	}
-	updates["gender"] = req.Gender
-
-	if err := dbConn.Model(&profile).Updates(updates).Error; err != nil {
-		c.JSON(500, gin.H{"error": "update failed"})
-		return
-	}
-
-	// Refresh profile data
-	dbConn.Where("user_id = ?", currentUserID).First(&profile)
-
-	var account model.UserAccount
-	dbConn.First(&account, currentUserID)
-
-	c.JSON(200, userResponse{
-		ID:       account.ID,
-		Username: account.Username,
-		Nickname: profile.Nickname,
-		Avatar:   profile.Avatar,
-	})
-}
-
-// GetContacts 获取联系人列表（重写原有的mock实现）
+// GetContacts 获取联系人列表
 func GetContacts(c *gin.Context) {
 	currentUserID := c.GetInt64("userID")
 	dbConn := db.GetDB()

@@ -3,4 +3,6 @@ export interface UserProfile {
   username: string
   nickname: string
   avatar: string
+  signature?: string
+  gender?: number
 }

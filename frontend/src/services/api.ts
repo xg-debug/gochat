@@ -3,6 +3,17 @@ import type { Contact, Conversation, Message } from '../types/chat'
 
 const baseUrl = ''
 
+function normalizeResourceUrl(url?: string) {
+  if (!url) return ''
+  if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('blob:') || url.startsWith('data:')) {
+    return url
+  }
+  if (url.startsWith('/')) {
+    return url
+  }
+  return `/${url}`
+}
+
 // 通用请求封装，后端接口完善后可直接替换实现
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('token') || ''
@@ -33,10 +44,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export async function loginRequest(username: string, password: string) {
-  return await request<{ token: string; user: UserProfile }>('/api/login', {
+  const data = await request<{ token: string; user: UserProfile }>('/api/login', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   })
+  data.user.avatar = normalizeResourceUrl(data.user.avatar)
+  return data
 }
 
 export async function registerRequest(
@@ -44,14 +57,18 @@ export async function registerRequest(
   password: string,
   nickname: string,
 ) {
-  return await request<{ token: string; user: UserProfile }>('/api/register', {
+  const data = await request<{ token: string; user: UserProfile }>('/api/register', {
     method: 'POST',
     body: JSON.stringify({ username, password, nickname }),
   })
+  data.user.avatar = normalizeResourceUrl(data.user.avatar)
+  return data
 }
 
 export async function profileRequest() {
-  return await request<UserProfile>('/api/profile')
+  const profile = await request<UserProfile>('/api/profile')
+  profile.avatar = normalizeResourceUrl(profile.avatar)
+  return profile
 }
 
 export async function logoutRequest() {
@@ -61,7 +78,7 @@ export async function logoutRequest() {
 }
 
 export async function fetchConversations(): Promise<Conversation[]> {
-  return await request<
+  const list = await request<
     {
       id: string
       name: string
@@ -71,16 +88,41 @@ export async function fetchConversations(): Promise<Conversation[]> {
       online?: boolean
     }[]
   >('/api/conversations')
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
+}
+
+export async function searchConversations(keyword: string): Promise<Conversation[]> {
+  const list = await request<
+    {
+      id: string
+      name: string
+      avatar: string
+      lastMessage: string
+      unread: number
+      online?: boolean
+    }[]
+  >(`/api/conversations/search?keyword=${encodeURIComponent(keyword)}`)
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export async function fetchContacts(): Promise<Contact[]> {
-  return await request<{ id: string; name: string; avatar: string; online?: boolean }[]>(
+  const list = await request<{ id: string; name: string; avatar: string; online?: boolean }[]>(
     '/api/contacts',
   )
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export async function fetchMessages(conversationId: string): Promise<Message[]> {
-  return await request<
+  const list = await request<
     {
       id: string
       fromId: string
@@ -90,6 +132,23 @@ export async function fetchMessages(conversationId: string): Promise<Message[]> 
       status: 'sent' | 'delivered' | 'read' | 'revoked'
     }[]
   >(`/api/messages?conversationId=${conversationId}`)
+  return list.map((item) => {
+    if (item.contentType === 'image' || item.contentType === 'file' || item.contentType === 'video') {
+      return { ...item, content: normalizeResourceUrl(item.content) }
+    }
+    if (item.contentType === 'audio') {
+      try {
+        const parsed = JSON.parse(item.content) as { url?: string; duration?: number }
+        if (parsed.url) {
+          parsed.url = normalizeResourceUrl(parsed.url)
+          return { ...item, content: JSON.stringify(parsed) }
+        }
+      } catch {
+        return { ...item, content: normalizeResourceUrl(item.content) }
+      }
+    }
+    return item
+  })
 }
 
 export type SearchUserResult = {
@@ -103,7 +162,11 @@ export type SearchUserResult = {
 }
 
 export async function searchUser(keyword: string) {
-  return await request<SearchUserResult[]>(`/api/user/search?keyword=${encodeURIComponent(keyword)}`)
+  const list = await request<SearchUserResult[]>(`/api/user/search?keyword=${encodeURIComponent(keyword)}`)
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export async function sendFriendRequest(toUserId: number) {
@@ -123,7 +186,11 @@ export type FriendRequestItem = {
 }
 
 export async function listFriendRequests() {
-  return await request<FriendRequestItem[]>('/api/friend/requests')
+  const list = await request<FriendRequestItem[]>('/api/friend/requests')
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export type GroupItem = {
@@ -135,7 +202,11 @@ export type GroupItem = {
 }
 
 export async function searchGroup(keyword: string) {
-  return await request<GroupItem[]>(`/api/group/search?keyword=${encodeURIComponent(keyword)}`)
+  const list = await request<GroupItem[]>(`/api/group/search?keyword=${encodeURIComponent(keyword)}`)
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export async function createGroup(name: string) {
@@ -153,7 +224,11 @@ export async function joinGroup(groupId: number) {
 }
 
 export async function listGroups() {
-  return await request<GroupItem[]>('/api/groups')
+  const list = await request<GroupItem[]>('/api/groups')
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
 }
 
 export async function handleFriendRequest(requestId: number, action: 'accept' | 'reject') {
@@ -185,10 +260,12 @@ export async function unblockFriend(friendId: number) {
 }
 
 export async function updateProfile(data: { nickname?: string; avatar?: string; signature?: string; gender?: number }) {
-  return await request<UserProfile>('/api/profile', {
+  const profile = await request<UserProfile>('/api/profile', {
     method: 'PUT',
     body: JSON.stringify(data),
   })
+  profile.avatar = normalizeResourceUrl(profile.avatar)
+  return profile
 }
 
 export async function uploadAvatar(file: File) {
@@ -213,7 +290,7 @@ export async function uploadAvatar(file: File) {
   }
   
   const data = await response.json()
-  return data.url as string
+  return normalizeResourceUrl(data.url as string)
 }
 
 export async function uploadChatImage(file: File) {
@@ -237,7 +314,7 @@ export async function uploadChatImage(file: File) {
   }
 
   const data = await response.json()
-  return data.url as string
+  return normalizeResourceUrl(data.url as string)
 }
 
 export async function uploadChatFile(file: File) {
@@ -260,7 +337,7 @@ export async function uploadChatFile(file: File) {
     throw new Error('上传失败')
   }
   const data = await response.json()
-  return data.url as string
+  return normalizeResourceUrl(data.url as string)
 }
 
 export async function uploadChatAudio(file: File) {
@@ -283,7 +360,7 @@ export async function uploadChatAudio(file: File) {
     throw new Error('上传失败')
   }
   const data = await response.json()
-  return data.url as string
+  return normalizeResourceUrl(data.url as string)
 }
 
 export async function uploadGroupAvatar(file: File) {
@@ -306,11 +383,13 @@ export async function uploadGroupAvatar(file: File) {
     throw new Error('上传失败')
   }
   const data = await response.json()
-  return data.url as string
+  return normalizeResourceUrl(data.url as string)
 }
 
 export async function getGroupProfile(groupId: number) {
-  return await request<GroupItem>(`/api/group/profile?groupId=${groupId}`)
+  const group = await request<GroupItem>(`/api/group/profile?groupId=${groupId}`)
+  group.avatar = normalizeResourceUrl(group.avatar)
+  return group
 }
 
 export async function updateGroupProfile(data: { groupId: number; name?: string; avatar?: string; notice?: string }) {
@@ -343,5 +422,20 @@ export async function setGroupAdmin(groupId: number, userId: number, action: 'se
   return await request<{ message: string }>('/api/group/admin', {
     method: 'POST',
     body: JSON.stringify({ groupId, userId, action }),
+  })
+}
+
+export async function listInviteableFriends(groupId: number) {
+  const list = await request<GroupMember[]>(`/api/group/inviteable?groupId=${groupId}`)
+  return list.map((item) => ({
+    ...item,
+    avatar: normalizeResourceUrl(item.avatar),
+  }))
+}
+
+export async function inviteGroupMember(groupId: number, userId: number) {
+  return await request<{ message: string }>('/api/group/invite', {
+    method: 'POST',
+    body: JSON.stringify({ groupId, userId }),
   })
 }

@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
-import { searchUser, sendFriendRequest, listFriendRequests, handleFriendRequest, updateProfile, uploadAvatar, logoutRequest, searchGroup, joinGroup, createGroup, listGroups, deleteFriend, blockFriend, uploadGroupAvatar, getGroupProfile, updateGroupProfile, listGroupMembers, kickGroupMember, setGroupAdmin, type SearchUserResult, type FriendRequestItem, type GroupItem, type GroupMember } from '../services/api'
+import { searchUser, sendFriendRequest, listFriendRequests, handleFriendRequest, updateProfile, uploadAvatar, logoutRequest, searchGroup, joinGroup, createGroup, listGroups, deleteFriend, blockFriend, uploadGroupAvatar, getGroupProfile, updateGroupProfile, listGroupMembers, kickGroupMember, setGroupAdmin, listInviteableFriends, inviteGroupMember, type SearchUserResult, type FriendRequestItem, type GroupItem, type GroupMember } from '../services/api'
 import ChatHeader from '../components/ChatHeader.vue'
 import ConversationList from '../components/ConversationList.vue'
 import ContactList from '../components/ContactList.vue'
@@ -15,6 +15,8 @@ const auth = useAuthStore()
 const chat = useChatStore()
 const router = useRouter()
 const activeTab = ref('conversations')
+const conversationKeyword = ref('')
+let conversationSearchTimer: number | null = null
 
 // 搜索加好友相关
 const showAddFriend = ref(false)
@@ -119,8 +121,8 @@ const openProfileEdit = () => {
     profileForm.value = {
       nickname: auth.user.nickname || '',
       avatar: auth.user.avatar || '',
-      signature: '', // 目前 UserProfile 类型还没加上 signature 字段，暂留空
-      gender: 0,
+      signature: auth.user.signature || '',
+      gender: auth.user.gender || 0,
     }
   }
   showProfileEdit.value = true
@@ -177,6 +179,8 @@ const myGroups = ref<GroupItem[]>([])
 const showGroupInfo = ref(false)
 const groupProfile = ref<GroupItem | null>(null)
 const groupMembers = ref<GroupMember[]>([])
+const inviteableFriends = ref<GroupMember[]>([])
+const inviteKeyword = ref('')
 const groupForm = ref({ name: '', avatar: '', notice: '' })
 const groupAvatarInput = ref<HTMLInputElement | null>(null)
 
@@ -191,6 +195,7 @@ const localStream = ref<MediaStream | null>(null)
 const remoteStream = ref<MediaStream | null>(null)
 let peerConnection: RTCPeerConnection | null = null
 let pendingOffer: RTCSessionDescriptionInit | null = null
+const pendingCandidates: RTCIceCandidateInit[] = []
 const isMuted = ref(false)
 const isCameraOff = ref(false)
 
@@ -249,6 +254,7 @@ const openGroupInfo = async () => {
   try {
     groupProfile.value = await getGroupProfile(groupId)
     groupMembers.value = await listGroupMembers(groupId)
+    inviteableFriends.value = await listInviteableFriends(groupId)
     groupForm.value = {
       name: groupProfile.value.name || '',
       avatar: groupProfile.value.avatar || '',
@@ -314,6 +320,19 @@ const onSetAdmin = async (userId: number, action: 'set' | 'unset') => {
   }
 }
 
+const onInviteMember = async (userId: number) => {
+  if (!groupProfile.value) return
+  try {
+    await inviteGroupMember(groupProfile.value.id, userId)
+    ElMessage.success('邀请成功')
+    groupMembers.value = await listGroupMembers(groupProfile.value.id)
+    inviteableFriends.value = await listInviteableFriends(groupProfile.value.id)
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : '邀请失败'
+    ElMessage.error(msg)
+  }
+}
+
 const ensurePeerConnection = () => {
   if (peerConnection) return peerConnection
   peerConnection = new RTCPeerConnection({
@@ -328,9 +347,17 @@ const ensurePeerConnection = () => {
     }
   }
   peerConnection.ontrack = (event) => {
-    remoteStream.value = event.streams[0]
+    const firstStream = event.streams[0]
+    if (!firstStream) return
+    remoteStream.value = firstStream
     if (remoteVideoRef.value) {
       remoteVideoRef.value.srcObject = remoteStream.value
+    }
+  }
+  peerConnection.onconnectionstatechange = () => {
+    if (!peerConnection) return
+    if (peerConnection.connectionState === 'failed' || peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'closed') {
+      cleanupCall()
     }
   }
   return peerConnection
@@ -342,6 +369,7 @@ const startLocalStream = async (type: 'audio' | 'video') => {
     video: type === 'video',
   })
   localStream.value = stream
+  await nextTick()
   if (localVideoRef.value) {
     localVideoRef.value.srcObject = stream
   }
@@ -353,6 +381,7 @@ const cleanupCall = () => {
   callStatus.value = 'idle'
   callPeerId.value = null
   pendingOffer = null
+  pendingCandidates.length = 0
   isMuted.value = false
   isCameraOff.value = false
   if (peerConnection) {
@@ -390,6 +419,10 @@ const toggleCamera = () => {
 }
 
 const startCall = async (type: 'audio' | 'video') => {
+  if (callStatus.value !== 'idle') {
+    ElMessage.warning('当前已有通话')
+    return
+  }
   const conversationId = chat.activeConversationId
   if (!conversationId || !conversationId.startsWith('u_')) {
     ElMessage.error('请选择单人会话')
@@ -417,6 +450,9 @@ const acceptCall = async () => {
   await startLocalStream(callType.value)
   const pc = ensurePeerConnection()
   await pc.setRemoteDescription(pendingOffer)
+  for (const candidate of pendingCandidates.splice(0)) {
+    await pc.addIceCandidate(candidate)
+  }
   const answer = await pc.createAnswer()
   await pc.setLocalDescription(answer)
   chat.sendCallSignal(callPeerId.value, {
@@ -466,11 +502,25 @@ onMounted(async () => {
   friendPollTimer = window.setInterval(refreshFriendRequests, 15000)
 })
 
+watch(conversationKeyword, (value) => {
+  if (activeTab.value !== 'conversations') return
+  if (conversationSearchTimer) {
+    window.clearTimeout(conversationSearchTimer)
+  }
+  conversationSearchTimer = window.setTimeout(async () => {
+    await chat.searchConversations(value)
+  }, 260)
+})
+
 onBeforeUnmount(() => {
   chat.disconnect()
   if (friendPollTimer) {
     window.clearInterval(friendPollTimer)
     friendPollTimer = null
+  }
+  if (conversationSearchTimer) {
+    window.clearTimeout(conversationSearchTimer)
+    conversationSearchTimer = null
   }
 })
 
@@ -513,6 +563,10 @@ const onCallSignal = async (event: Event) => {
   const action = detail.payload?.action as string
   if (!detail.fromId) return
   if (action === 'offer') {
+    if (callStatus.value !== 'idle') {
+      chat.sendCallSignal(detail.fromId, { action: 'busy' })
+      return
+    }
     callPeerId.value = detail.fromId
     callType.value = (detail.payload?.callType as 'audio' | 'video') || 'video'
     pendingOffer = detail.payload?.sdp as RTCSessionDescriptionInit
@@ -525,6 +579,9 @@ const onCallSignal = async (event: Event) => {
     const sdp = detail.payload?.sdp as RTCSessionDescriptionInit
     if (sdp) {
       await peerConnection.setRemoteDescription(sdp)
+      for (const candidate of pendingCandidates.splice(0)) {
+        await peerConnection.addIceCandidate(candidate)
+      }
       callStatus.value = 'in-call'
     }
     return
@@ -533,12 +590,16 @@ const onCallSignal = async (event: Event) => {
     if (!peerConnection) return
     const candidate = detail.payload?.candidate as RTCIceCandidateInit
     if (candidate) {
-      await peerConnection.addIceCandidate(candidate)
+      if (peerConnection.remoteDescription) {
+        await peerConnection.addIceCandidate(candidate)
+      } else {
+        pendingCandidates.push(candidate)
+      }
     }
     return
   }
-  if (action === 'reject' || action === 'hangup') {
-    ElMessage.info(action === 'reject' ? '对方已拒绝' : '通话已结束')
+  if (action === 'reject' || action === 'hangup' || action === 'busy') {
+    ElMessage.info(action === 'reject' ? '对方已拒绝' : action === 'busy' ? '对方忙线中' : '通话已结束')
     cleanupCall()
   }
 }
@@ -615,7 +676,7 @@ onBeforeUnmount(() => {
 
     <section class="wechat-panel">
       <div class="panel-search">
-        <el-input placeholder="搜索" size="small" prefix-icon="Search" />
+        <el-input v-model="conversationKeyword" placeholder="搜索会话/群聊" size="small" clearable />
       </div>
       
       <!-- Custom Content Switching instead of el-tabs with headers -->
@@ -824,6 +885,30 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+        <div class="group-members">
+          <div class="group-title">邀请好友进群</div>
+          <el-input v-model="inviteKeyword" placeholder="搜索好友昵称/账号" />
+          <div class="invite-list">
+            <div
+              v-for="u in inviteableFriends.filter((item) => !inviteKeyword || item.nickname.includes(inviteKeyword) || item.username.includes(inviteKeyword))"
+              :key="u.userId"
+              class="member-item"
+            >
+              <div class="member-avatar">
+                <img v-if="u.avatar" :src="u.avatar" />
+                <span v-else>{{ u.nickname.slice(0, 1) }}</span>
+              </div>
+              <div class="member-info">
+                <div class="member-name">{{ u.nickname }}</div>
+                <div class="member-role">{{ u.username }}</div>
+              </div>
+              <div class="member-actions">
+                <el-button size="small" type="primary" @click="onInviteMember(u.userId)">邀请</el-button>
+              </div>
+            </div>
+            <div v-if="inviteableFriends.length === 0" class="no-result">暂无可邀请好友</div>
+          </div>
+        </div>
       </div>
       <template #footer>
         <el-button @click="showGroupInfo = false">取消</el-button>
@@ -961,8 +1046,8 @@ onBeforeUnmount(() => {
 }
 
 .panel-search {
-  padding: 12px;
-  background: #f7f7f7;
+  padding: 14px 12px;
+  background: linear-gradient(180deg, #f8fbff 0%, #f6f7fb 100%);
   -webkit-app-region: drag;
   border-bottom: 1px solid #ececec;
 }
@@ -978,7 +1063,7 @@ onBeforeUnmount(() => {
 }
 
 .wechat-chat {
-  background: #f5f5f5;
+  background: linear-gradient(180deg, #f7f8fb 0%, #f4f5f7 100%);
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -1136,6 +1221,16 @@ onBeforeUnmount(() => {
 .group-members {
   border-top: 1px solid #f0f0f0;
   padding-top: 12px;
+}
+
+.invite-list {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-top: 10px;
+  border: 1px solid #eef1f5;
+  border-radius: 8px;
+  padding: 0 10px;
+  background: #fafbfd;
 }
 
 .member-item {

@@ -6,8 +6,60 @@ import { useChatStore } from '../stores/chat'
 const chat = useChatStore()
 const auth = useAuthStore()
 const listRef = ref<HTMLDivElement | null>(null)
+const playingId = ref('')
+let playingAudio: HTMLAudioElement | null = null
 
 const messages = computed(() => chat.activeMessages)
+
+function getAudioMeta(content: string) {
+  try {
+    const parsed = JSON.parse(content) as { url?: string; duration?: number }
+    if (parsed.url) {
+      return {
+        url: parsed.url,
+        duration: parsed.duration || 0,
+      }
+    }
+  } catch {
+    // keep legacy format
+  }
+  return { url: content, duration: 0 }
+}
+
+function formatDuration(seconds: number) {
+  if (!seconds || seconds <= 0) return ''
+  return `${seconds}s`
+}
+
+function playVoice(id: string, content: string) {
+  const meta = getAudioMeta(content)
+  if (!meta.url) return
+  if (playingAudio) {
+    playingAudio.pause()
+    playingAudio = null
+  }
+  if (playingId.value === id) {
+    playingId.value = ''
+    return
+  }
+  const audio = new Audio(meta.url)
+  playingAudio = audio
+  playingId.value = id
+  audio.onended = () => {
+    if (playingId.value === id) {
+      playingId.value = ''
+    }
+    if (playingAudio === audio) {
+      playingAudio = null
+    }
+  }
+  void audio.play().catch(() => {
+    playingId.value = ''
+    if (playingAudio === audio) {
+      playingAudio = null
+    }
+  })
+}
 
 watch(
   () => messages.value.length,
@@ -36,8 +88,14 @@ watch(
           <div v-else-if="item.contentType === 'image'" class="message-image">
             <img :src="item.content" alt="image" />
           </div>
-          <div v-else-if="item.contentType === 'audio'" class="message-audio">
-            <audio controls :src="item.content"></audio>
+          <div
+            v-else-if="item.contentType === 'audio'"
+            class="voice-bubble"
+            :class="{ playing: playingId === item.id }"
+            @click="playVoice(item.id, item.content)"
+          >
+            <span class="voice-icon">▶</span>
+            <span class="voice-text">{{ formatDuration(getAudioMeta(item.content).duration || 1) }}</span>
           </div>
           <div v-else-if="item.contentType === 'video'" class="message-video">
             <video controls :src="item.content"></video>
@@ -117,8 +175,39 @@ watch(
   display: block;
 }
 
-.message-audio audio {
-  width: 220px;
+.voice-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 70px;
+  padding: 6px 10px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  cursor: pointer;
+}
+
+.message-item.self .voice-bubble {
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.voice-bubble.playing .voice-icon {
+  animation: pulse 1s infinite;
+}
+
+.voice-icon {
+  font-size: 12px;
+  color: #374151;
+}
+
+.voice-text {
+  font-size: 12px;
+  color: #374151;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.35; }
+  50% { opacity: 1; }
+  100% { opacity: 0.35; }
 }
 
 .message-video video {

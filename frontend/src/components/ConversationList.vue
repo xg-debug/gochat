@@ -57,14 +57,15 @@ function formatTime() {
   display: flex;
   gap: 12px;
   padding: 12px 14px;
-  border-radius: 8px;
+  border-radius: 10px;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s, transform 0.2s;
 }
 
 .conversation-item.active,
 .conversation-item:hover {
   background: #e9f5ee;
+  transform: translateY(-1px);
 }
 
 .conversation-avatar {

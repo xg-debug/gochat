@@ -1,5 +1,5 @@
 export type WsMessage = {
-  type: 'single' | 'group' | 'heartbeat' | 'ack' | 'read' | 'revoke' | 'call'
+  type: 'single' | 'group' | 'heartbeat' | 'ack' | 'read' | 'revoke' | 'call' | 'presence'
   from_id: number
   to_id: number
   payload: string
