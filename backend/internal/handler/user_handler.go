@@ -34,6 +34,9 @@ type userResponse struct {
 	Avatar    string `json:"avatar"`
 	Signature string `json:"signature"`
 	Gender    int8   `json:"gender"`
+	Phone     string `json:"phone"`
+	Location  string `json:"location"`
+	Birthday  string `json:"birthday"`
 }
 
 type contactResponse struct {
@@ -55,6 +58,7 @@ type conversationResponse struct {
 type messageResponse struct {
 	ID          string `json:"id"`
 	FromID      string `json:"fromId"`
+	FromAvatar  string `json:"fromAvatar"`
 	Content     string `json:"content"`
 	ContentType string `json:"contentType"`
 	Time        int64  `json:"time"`
@@ -116,6 +120,9 @@ func Login(c *gin.Context) {
 			Avatar:    profile.Avatar,
 			Signature: profile.Signature,
 			Gender:    profile.Gender,
+			Phone:     profile.Phone,
+			Location:  profile.Location,
+			Birthday:  formatBirthday(profile.Birthday),
 		},
 	})
 }
@@ -191,6 +198,9 @@ func Register(c *gin.Context) {
 			Avatar:    profile.Avatar,
 			Signature: profile.Signature,
 			Gender:    profile.Gender,
+			Phone:     profile.Phone,
+			Location:  profile.Location,
+			Birthday:  formatBirthday(profile.Birthday),
 		},
 	})
 }
@@ -227,6 +237,9 @@ func Profile(c *gin.Context) {
 		Avatar:    profile.Avatar,
 		Signature: profile.Signature,
 		Gender:    profile.Gender,
+		Phone:     profile.Phone,
+		Location:  profile.Location,
+		Birthday:  formatBirthday(profile.Birthday),
 	})
 }
 
@@ -237,6 +250,9 @@ func UpdateProfile(c *gin.Context) {
 		Avatar    *string `json:"avatar"`
 		Signature *string `json:"signature"`
 		Gender    *int8   `json:"gender"`
+		Phone     *string `json:"phone"`
+		Location  *string `json:"location"`
+		Birthday  *string `json:"birthday"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -274,6 +290,25 @@ func UpdateProfile(c *gin.Context) {
 	if req.Gender != nil {
 		updates["gender"] = *req.Gender
 	}
+	if req.Phone != nil {
+		updates["phone"] = strings.TrimSpace(*req.Phone)
+	}
+	if req.Location != nil {
+		updates["location"] = strings.TrimSpace(*req.Location)
+	}
+	if req.Birthday != nil {
+		birthdayText := strings.TrimSpace(*req.Birthday)
+		if birthdayText == "" {
+			updates["birthday"] = nil
+		} else {
+			birthday, err := time.Parse("2006-01-02", birthdayText)
+			if err != nil {
+				c.JSON(400, gin.H{"error": "invalid birthday format, expected YYYY-MM-DD"})
+				return
+			}
+			updates["birthday"] = birthday
+		}
+	}
 
 	if len(updates) > 0 {
 		if err := dbConn.Model(&profile).Updates(updates).Error; err != nil {
@@ -299,6 +334,9 @@ func UpdateProfile(c *gin.Context) {
 		Avatar:    profile.Avatar,
 		Signature: profile.Signature,
 		Gender:    profile.Gender,
+		Phone:     profile.Phone,
+		Location:  profile.Location,
+		Birthday:  formatBirthday(profile.Birthday),
 	})
 }
 
@@ -637,6 +675,26 @@ func Messages(c *gin.Context) {
 			return
 		}
 	}
+	avatarMap := map[int64]string{}
+	if len(messages) > 0 {
+		fromIDs := make([]int64, 0, len(messages))
+		seen := map[int64]struct{}{}
+		for _, message := range messages {
+			if _, ok := seen[message.FromID]; ok {
+				continue
+			}
+			seen[message.FromID] = struct{}{}
+			fromIDs = append(fromIDs, message.FromID)
+		}
+		if len(fromIDs) > 0 {
+			var profiles []model.UserProfile
+			if err := dbConn.Where("user_id in ?", fromIDs).Find(&profiles).Error; err == nil {
+				for _, profile := range profiles {
+					avatarMap[profile.UserID] = profile.Avatar
+				}
+			}
+		}
+	}
 	result := make([]messageResponse, 0, len(messages))
 	for _, msg := range messages {
 		content := msg.Content
@@ -650,6 +708,7 @@ func Messages(c *gin.Context) {
 		result = append(result, messageResponse{
 			ID:          fmt.Sprintf("m_%d", msg.ID),
 			FromID:      fmt.Sprintf("u_%d", msg.FromID),
+			FromAvatar:  avatarMap[msg.FromID],
 			Content:     content,
 			ContentType: msgTypeToContentType(msg.MsgType),
 			Time:        msg.CreatedAt.UnixMilli(),
@@ -657,6 +716,13 @@ func Messages(c *gin.Context) {
 		})
 	}
 	c.JSON(200, result)
+}
+
+func formatBirthday(birthday *time.Time) string {
+	if birthday == nil {
+		return ""
+	}
+	return birthday.Format("2006-01-02")
 }
 
 func parseInt64(value string) (int64, error) {

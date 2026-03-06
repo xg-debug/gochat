@@ -1,0 +1,386 @@
+GoChat 项目功能与技术方案说明
+版本：v1.0
+日期：2026-03-06
+
+一、项目概述
+GoChat 是一个前后端分离的即时通讯系统，当前已实现账号体系、好友体系、单聊/群聊、文本与多媒体消息、群管理、单聊音视频通话、在线状态感知等核心能力。
+
+技术栈（现状）：
+1. 前端：Vue3 + TypeScript + Vite + Pinia + Element Plus + WebRTC
+2. 后端：Go + Gin + GORM + MySQL + Gorilla WebSocket + JWT
+3. 传输：HTTP REST + WebSocket（实时信令/消息）
+4. 存储：MySQL（业务数据），本地文件系统（头像/聊天文件）
+
+--------------------------------------------------
+二、当前已实现功能说明（按业务域）
+
+2.1 用户与认证
+1. 用户注册：创建账号（用户名、密码、昵称）
+2. 用户登录：用户名密码校验，签发 JWT
+3. 用户登出：服务端 token 加入黑名单（内存）
+4. 用户资料读取与编辑：
+   - 已支持字段：昵称、头像、签名、性别、手机号、地区、生日
+   - 资料编辑后同步更新前端本地状态与 localStorage
+
+2.2 通讯录与好友体系
+1. 用户搜索：按关键字搜索用户
+2. 发起好友申请
+3. 新朋友列表查询（待处理好友申请）
+4. 同意/拒绝好友申请
+5. 删除好友
+6. 拉黑/取消拉黑
+7. 通讯录列表（含在线状态）
+
+2.3 会话与消息
+1. 会话列表：单聊会话 + 群聊会话
+2. 会话搜索：后端检索 + 前端本地回退过滤
+3. 历史消息拉取：按会话 ID 分页前基础查询（目前是全量按时间升序）
+4. 消息类型：
+   - text（文本）
+   - image（图片）
+   - file（文件）
+   - video（视频）
+   - audio（语音）
+5. 消息状态（字段）：sent / delivered / read / revoked
+6. 撤回展示：后端按状态返回“已撤回”，前端展示占位文本
+
+2.4 上传与媒体能力
+1. 头像上传（个人头像、群头像）
+2. 聊天图片上传
+3. 聊天文件上传
+4. 聊天语音上传
+5. 本地静态资源映射（/uploads/...）
+
+2.5 群聊功能
+1. 创建群聊
+2. 搜索群聊
+3. 加入群聊
+4. 我的群聊列表
+5. 群资料查看与编辑（群名、群头像、群公告）
+6. 群成员列表
+7. 管理员/群主能力：
+   - 踢人
+   - 设为管理员/取消管理员
+8. 邀请好友进群
+9. 权限控制：按成员角色校验群操作权限
+
+2.6 实时能力（WebSocket）
+1. 单聊实时消息推送
+2. 群聊实时消息推送
+3. 消息 ACK 回执（前端本地 tempId -> 服务端 messageId）
+4. 在线状态广播（presence）
+5. 读回执、撤回信令通道（接口已定义，UI 已部分处理）
+6. 心跳与重连：前端定时 heartbeat + 断线指数退避重连
+
+2.7 音视频通话（当前范围）
+1. 当前已实现：一对一音视频通话（WebRTC P2P）
+2. 信令复用 WebSocket 的 call 消息类型（offer/answer/candidate/reject/hangup/busy）
+3. 媒体采集：getUserMedia
+4. 音视频切换控制：静音/开关摄像头
+
+--------------------------------------------------
+三、前端技术实现细节
+
+3.1 架构分层
+1. view 层：ChatView/LoginView/AdminView
+2. component 层：ConversationList、MessageList、MessageInput、ChatHeader、ContactList 等
+3. store 层：
+   - auth store：登录、注册、资料拉取、登出、登录态持久化
+   - chat store：会话/消息状态、WS 接入、消息分发、通话信令分发
+4. service 层：
+   - api.ts：统一请求封装、token 注入、HTTP 错误处理、资源 URL 规范化
+   - ws.ts：WebSocket 客户端、心跳、重连、payload 编解码
+
+3.2 状态与数据流
+1. 启动流程：
+   - 读取 localStorage 的 token/user
+   - 拉 profile 和 bootstrap（会话/联系人）
+   - 建立 WebSocket 连接
+2. 消息发送：
+   - 前端先本地插入 sent 状态（乐观更新）
+   - 发送 WS 消息，携带 tempId
+   - 收到 ack 后将本地消息替换为真实 messageId 并置为 delivered
+3. 消息接收：
+   - decode WS payload
+   - 路由到当前会话或新建会话
+   - 更新 lastMessage/unread
+
+3.3 媒体消息实现
+1. 图片/文件：文件上传后得到 URL，再发送 chat 消息
+2. 语音：
+   - MediaRecorder 录音（优先 mp4，否则 webm）
+   - 上传后发送 audio 消息（content 为 JSON：url + duration）
+3. 粘贴上传：监听 paste，检测 image 并自动上传发送
+
+3.4 通话实现（单聊）
+1. 发起方：createOffer -> setLocalDescription -> 发送 offer
+2. 接收方：setRemoteDescription(offer) -> createAnswer -> setLocalDescription -> 发送 answer
+3. 双方交换 ICE candidate
+4. 远端流通过 ontrack 挂载到 video 元素
+
+3.5 UI 与交互要点
+1. 会话头像、消息头像支持兜底逻辑
+2. 群聊无头像时使用群组图标占位
+3. ChatHeader 去除了私聊无意义的“更多”按钮，群聊保留“群信息”入口
+
+--------------------------------------------------
+四、后端技术实现细节
+
+4.1 服务启动与中间件
+1. Gin 启动 HTTP 服务
+2. JWT 认证中间件：
+   - 解析 Bearer token
+   - 校验黑名单
+   - 将 user_id/userID 注入上下文
+3. 静态资源目录映射：头像/聊天媒体/群头像
+
+4.2 数据访问与模型
+1. GORM + MySQL
+2. 自动迁移模型：UserAccount、UserProfile、Friend、FriendRequest、Message、File、ChatGroup、GroupMember
+3. 连接池参数：最大空闲/最大连接/连接生命周期
+
+4.3 业务接口（REST）
+1. 认证接口：/login /register /logout /profile
+2. 好友接口：
+   - /user/search
+   - /friend/request
+   - /friend/requests
+   - /friend/handle
+   - /friend/delete
+   - /friend/block
+   - /friend/unblock
+   - /contacts
+3. 会话与消息接口：
+   - /conversations
+   - /conversations/search
+   - /messages
+4. 群聊接口：
+   - /group/create
+   - /group/search
+   - /group/join
+   - /groups
+   - /group/profile (GET/PUT)
+   - /group/members
+   - /group/kick
+   - /group/admin
+   - /group/inviteable
+   - /group/invite
+5. 上传接口：
+   - /upload/avatar
+   - /upload/chat/image
+   - /upload/chat/file
+   - /upload/chat/audio
+   - /upload/group/avatar
+
+4.4 WebSocket 架构
+1. Hub 维护在线客户端 map（userID -> connection）
+2. Register/Unregister/Broadcast 三通道驱动
+3. readLoop 读取客户端消息并路由
+4. writeLoop 负责下行写入和 ping
+5. RouteMessage 按 type 分发：single/group/call/heartbeat/read/revoke
+6. 消息落库：
+   - 解析 payload content/contentType
+   - 转换为 msgType
+   - 存 messages 表
+   - 发送 ack 给发送者
+7. 群聊消息 fan-out：查询群成员后逐个在线推送
+
+4.5 权限与一致性策略（现状）
+1. 群接口按成员关系和角色做校验
+2. 消息状态基于数据库 status 字段维护
+3. 登出黑名单为进程内存级（重启后失效）
+
+--------------------------------------------------
+五、群聊多人音视频通话实现方案（设计）
+
+5.1 目标
+1. 在群聊房间支持多人实时音视频
+2. 支持 3~50 人可用（可按阶段扩容）
+3. 具备可扩展、可观测、可水平扩展能力
+
+5.2 方案选型建议
+建议采用 SFU 架构，而非全 Mesh：
+1. Mesh（每人直连每人）
+   - 优点：实现简单
+   - 缺点：N 人会形成 N*(N-1)/2 条连接，带宽与 CPU 爆炸，不适合多人
+2. MCU（服务端混流）
+   - 优点：客户端压力小
+   - 缺点：服务器算力重、延迟与成本高
+3. SFU（推荐）
+   - 每个客户端仅上行一份媒体流到 SFU
+   - SFU 转发订阅流给其他参与者
+   - 兼顾实时性、性能和扩展性
+
+5.3 组件设计
+1. 信令层（可复用现有 WS）：
+   - 事件：join_room / leave_room / publish / unpublish / subscribe / offer / answer / candidate / mute / camera / screen
+2. 媒体层（新增 SFU 服务）：
+   - 可选：mediasoup、ion-sfu、LiveKit
+3. NAT 穿透：
+   - STUN + TURN（coturn）
+4. 房间状态：
+   - Redis 保存房间成员、流元数据、主持人状态、静音状态
+
+5.4 房间与权限模型
+1. room_id 对应群 ID（或群ID+会议ID）
+2. participant 角色：owner/admin/member
+3. 权限：
+   - 主持人可全员静音、移除成员、锁房间
+
+5.5 核心流程
+1. 入会：
+   - 鉴权（JWT）
+   - 加入信令房间
+   - 拉取当前发布流列表
+2. 发布：
+   - 客户端采集音视频 -> publish 给 SFU
+3. 订阅：
+   - 客户端按策略订阅远端轨道（大流/小流、活跃发言人优先）
+4. 退会：
+   - 清理发布轨道、订阅关系、房间状态
+
+5.6 关键优化点
+1. Simulcast/SVC：多码率转发，弱网优先低码率
+2. Active Speaker：只高亮当前发言人
+3. LastN：只订阅最近 N 路视频流
+4. 弱网策略：降帧率/降分辨率/只音频
+5. 录制与回放：可引入旁路录制服务
+
+5.7 分阶段落地计划
+1. Phase 1：群内多人语音（先音频）
+2. Phase 2：多人视频（3~9 宫格）
+3. Phase 3：屏幕共享、会议控制、录制
+4. Phase 4：跨地域加速、动态扩缩容
+
+--------------------------------------------------
+六、未来可改进技术点
+
+6.1 引入 Redis（强烈建议优先）
+1. 在线状态分布式存储（替代单机内存）
+2. JWT 黑名单持久化（解决重启丢失）
+3. 会话/资料热点缓存（减轻 MySQL 压力）
+4. 分布式锁（群管理高并发操作）
+5. Pub/Sub 或 Stream 做跨节点消息分发
+
+6.2 引入 Kafka（消息与事件总线）
+1. 聊天消息异步化：写入消息队列 -> 消费落库/推送
+2. 事件解耦：登录、好友变更、群事件、审计事件
+3. 削峰填谷：高并发场景提升系统稳定性
+4. 消费组支持横向扩展
+
+6.3 存储与文件体系升级
+1. 媒体文件从本地磁盘迁移到对象存储（S3/OSS/MinIO）
+2. CDN 加速分发
+3. 上传鉴权与防盗链
+
+6.4 可观测性
+1. 指标：Prometheus + Grafana
+2. 链路：OpenTelemetry + Jaeger/Tempo
+3. 日志：结构化日志 + ELK / Loki
+4. 告警：错误率、延迟、队列积压、WebSocket连接数
+
+6.5 安全加固
+1. JWT 密钥管理（KMS/环境变量）
+2. 限流（用户/IP/API 级）
+3. 文件上传安全（MIME 校验、杀毒、大小限制）
+4. 敏感词过滤与内容审核
+5. WebSocket 鉴权续期与踢下线机制
+
+6.6 工程质量
+1. 增加单元测试/集成测试/端到端测试
+2. CI/CD 自动化（lint、test、build、deploy）
+3. 数据库 migration 版本管理（golang-migrate）
+4. API 文档（OpenAPI/Swagger）
+
+--------------------------------------------------
+七、分布式部署方案（建议）
+
+7.1 服务拆分建议
+1. api-gateway（鉴权、路由、限流）
+2. user-service（用户/好友）
+3. chat-service（会话/消息）
+4. group-service（群与成员）
+5. ws-gateway（WebSocket 长连接）
+6. media-service（上传、转码）
+7. rtc-service（SFU）
+
+7.2 基础设施
+1. MySQL 主从 + 读写分离
+2. Redis 集群（缓存+状态）
+3. Kafka 集群（消息总线）
+4. 对象存储 + CDN
+5. Nginx / Ingress 负载均衡
+
+7.3 Kubernetes 部署建议
+1. 每个服务独立 Deployment + HPA
+2. WebSocket 服务使用长连接优化配置（亲和性/超时）
+3. ConfigMap/Secret 管理配置和密钥
+4. 灰度发布（Canary）
+
+7.4 聊天场景关键点
+1. 会话读多写多：优先缓存 + 异步写入
+2. 消息幂等：client_msg_id 去重
+3. 顺序保证：按会话/分区键路由（Kafka key=conversation_id）
+4. 离线消息：消息存储 + 拉取游标
+
+--------------------------------------------------
+八、面试高频问题与标准回答
+
+Q1：你们为什么同时用了 HTTP 和 WebSocket？
+A：HTTP 用于鉴权、资料管理、历史数据查询等请求-响应型接口；WebSocket 用于实时消息、在线状态和通话信令，能减少轮询开销并降低消息时延。
+
+Q2：消息发送如何保证用户体验？
+A：前端先乐观插入 sent 状态，服务端落库后返回 ack（含 tempId->messageId 映射）再改为 delivered。这样既快又能确保最终一致。
+
+Q3：群聊消息为什么要服务端 fan-out？
+A：群成员关系和权限在服务端最可靠，服务端 fan-out 能统一鉴权、审计和离线处理，同时避免客户端自行广播造成安全风险。
+
+Q4：在线状态是怎么做的？
+A：当前由 WS Hub 维护在线连接 map，并在连接上下线时广播 presence 事件。分布式场景计划迁移到 Redis + Pub/Sub。
+
+Q5：你们如何处理断线重连？
+A：前端 WsClient 实现指数退避重连和心跳机制；后端 read/write loop 设置读写 deadline 和 ping/pong 保活。
+
+Q6：消息顺序怎么保证？
+A：单节点下按 created_at + 自增ID 近似有序；进一步可通过 conversation_id 作为分区键落 Kafka，消费侧串行处理同会话以增强顺序保证。
+
+Q7：撤回是如何实现的？
+A：撤回通过 WS revoke 信令触发，服务端校验消息归属后把 message.status 更新为 revoked，客户端按状态展示“已撤回”。
+
+Q8：好友体系如何避免脏数据？
+A：好友同意时创建双向关系，删除时删除双向记录，拉黑使用状态位控制。后续可增加唯一索引与事务封装提升一致性。
+
+Q9：为什么一对一通话能做但多人不建议继续 P2P Mesh？
+A：Mesh 连接数随人数平方级增长，带宽和 CPU 成本不可控。多人场景应使用 SFU，把上行固定为一份，扩展性更好。
+
+Q10：多人通话你推荐什么方案？
+A：推荐 SFU（mediasoup/ion-sfu/LiveKit）+ 现有 WS 信令 + TURN。先做多人语音再做多人视频，分阶段上线。
+
+Q11：为什么要引入 Redis？
+A：可解决在线状态分布式共享、JWT 黑名单持久化、热点缓存、分布式锁等问题，是从单机到多节点的关键基础设施。
+
+Q12：为什么要引入 Kafka？
+A：用于解耦和削峰。消息写入、通知推送、审计等可异步处理，提高吞吐和可用性，降低核心链路耦合。
+
+Q13：你们目前最大的技术风险点是什么？
+A：当前黑名单与在线状态是进程内存级，服务重启或多实例会有一致性问题；媒体存储在本地磁盘，不利于弹性扩展。
+
+Q14：如何保证接口安全？
+A：JWT 鉴权 + 参数校验 + 权限判断（如群角色校验）。后续可补充限流、审计、上传文件安全扫描和敏感操作风控。
+
+Q15：如果让你一周内提升稳定性，优先做什么？
+A：优先三件事：
+1) Redis 化在线状态与 token 黑名单；
+2) 增加消息链路观测与告警；
+3) 引入对象存储替代本地文件，降低节点耦合。
+
+--------------------------------------------------
+九、总结
+
+当前项目已经具备 IM 核心闭环能力（账号、好友、单聊、群聊、多媒体、实时、单聊音视频）。
+下一阶段的重点应从“功能可用”转向“架构可扩展与高可用”：
+1. Redis + Kafka 基础设施升级
+2. 多人通话采用 SFU
+3. 分布式部署与可观测体系建设
+4. 测试与工程化完善
+

@@ -3,7 +3,7 @@ import { defineStore } from 'pinia'
 import { loginRequest, profileRequest, registerRequest } from '../services/api'
 import type { UserProfile } from '../types/user'
 
-// 认证与用户信息状态
+// 认证与用户信息
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('token') || '')
   const user = ref<UserProfile | null>(null)
@@ -21,6 +21,7 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => Boolean(token.value))
 
   async function login(username: string, password: string) {
+    // 请求开始
     loading.value = true
     try {
       const result = await loginRequest(username, password)
@@ -29,6 +30,7 @@ export const useAuthStore = defineStore('auth', () => {
       localStorage.setItem('token', result.token)
       localStorage.setItem('user', JSON.stringify(result.user))
     } finally {
+      // 请求结束
       loading.value = false
     }
   }
@@ -46,6 +48,7 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  // 获取用户信息
   async function fetchProfile() {
     if (!token.value) return
     try {
@@ -67,6 +70,7 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('user')
   }
 
+  // store对外暴露的接口
   return {
     token,
     user,

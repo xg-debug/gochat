@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
+import type { Message } from '../types/chat'
 
 const chat = useChatStore()
 const auth = useAuthStore()
@@ -10,6 +11,54 @@ const playingId = ref('')
 let playingAudio: HTMLAudioElement | null = null
 
 const messages = computed(() => chat.activeMessages)
+
+function normalizeAvatarUrl(url?: string) {
+  if (!url) return ''
+  if (
+    url.startsWith('http://') ||
+    url.startsWith('https://') ||
+    url.startsWith('blob:') ||
+    url.startsWith('data:')
+  ) {
+    return url
+  }
+  return url.startsWith('/') ? url : `/${url}`
+}
+
+function isSelfMessage(item: Message) {
+  return item.fromId === `u_${auth.user?.id || 0}`
+}
+
+function resolveMessageAvatar(item: Message) {
+  if (isSelfMessage(item)) {
+    return normalizeAvatarUrl(auth.user?.avatar)
+  }
+  const fromAvatar = normalizeAvatarUrl(item.fromAvatar)
+  if (fromAvatar) {
+    return fromAvatar
+  }
+  const sender = chat.contacts.find((contact) => {
+    return (
+      contact.id === item.fromId ||
+      `u_${contact.id}` === item.fromId ||
+      contact.id === item.fromId.replace(/^u_/, '')
+    )
+  })
+  if (sender?.avatar) {
+    return normalizeAvatarUrl(sender.avatar)
+  }
+  if (chat.activeConversationId.startsWith('u_')) {
+    return normalizeAvatarUrl(chat.activeConversation?.avatar)
+  }
+  return ''
+}
+
+function resolveMessageFallback(item: Message) {
+  if (isSelfMessage(item)) {
+    return auth.user?.nickname?.slice(0, 1) || '我'
+  }
+  return '对'
+}
 
 function getAudioMeta(content: string) {
   try {
@@ -78,10 +127,11 @@ watch(
       </div>
       <div
         class="message-item"
-        :class="{ self: item.fromId === `u_${auth.user?.id || 1}` }"
+        :class="{ self: isSelfMessage(item) }"
       >
         <div class="message-avatar">
-          {{ item.fromId === `u_${auth.user?.id || 1}` ? '我' : '对' }}
+          <img v-if="resolveMessageAvatar(item)" :src="resolveMessageAvatar(item)" class="avatar-img" />
+          <span v-else>{{ resolveMessageFallback(item) }}</span>
         </div>
         <div class="message-bubble">
           <div v-if="item.status === 'revoked'" class="message-content">[已撤回]</div>
@@ -149,6 +199,13 @@ watch(
   align-items: center;
   justify-content: center;
   font-size: 13px;
+  overflow: hidden;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .message-bubble {

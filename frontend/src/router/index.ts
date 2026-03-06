@@ -37,7 +37,7 @@ const router = createRouter({
 router.beforeEach(async (to: RouteLocationNormalized, _from, next) => {
   const authStore = useAuthStore()
 
-  // 尝试恢复登录状态
+  // 尝试恢复登录状态：用户信息为空，但token存在，说明浏览器刷新了，因为Pinia内存丢失，但localStorage token还存在
   if (!authStore.user && authStore.token) {
     try {
       await authStore.fetchProfile()
@@ -51,9 +51,11 @@ router.beforeEach(async (to: RouteLocationNormalized, _from, next) => {
 
   const requiresAuth = to.meta.requiresAuth
 
+  // 需要登录，但是未登录
   if (requiresAuth && !authStore.isAuthenticated) {
     next('/login')
   } else if (to.path === '/login' && authStore.isAuthenticated) {
+    // 已登录，但是访问登录页，重定向到聊天页
     next('/chat')
   } else {
     next()

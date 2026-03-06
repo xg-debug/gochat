@@ -238,6 +238,10 @@ export const useChatStore = defineStore('chat', () => {
     const incoming: Message = {
       id: `ws_${Date.now()}`,
       fromId: `u_${message.from_id}`,
+      fromAvatar:
+        typeof decoded.extra?.fromAvatar === 'string'
+          ? decoded.extra.fromAvatar
+          : '',
       content: decoded.content,
       contentType: decoded.contentType,
       time: Date.now(),

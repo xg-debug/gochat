@@ -14,7 +14,7 @@ function normalizeResourceUrl(url?: string) {
   return `/${url}`
 }
 
-// 通用请求封装，后端接口完善后可直接替换实现
+// 通用请求封装
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('token') || ''
   const headers = new Headers(options.headers)
@@ -126,6 +126,7 @@ export async function fetchMessages(conversationId: string): Promise<Message[]> 
     {
       id: string
       fromId: string
+      fromAvatar?: string
       content: string
       contentType: 'text' | 'file' | 'image' | 'video' | 'audio'
       time: number
@@ -133,21 +134,22 @@ export async function fetchMessages(conversationId: string): Promise<Message[]> 
     }[]
   >(`/api/messages?conversationId=${conversationId}`)
   return list.map((item) => {
+    const normalizedAvatar = normalizeResourceUrl(item.fromAvatar)
     if (item.contentType === 'image' || item.contentType === 'file' || item.contentType === 'video') {
-      return { ...item, content: normalizeResourceUrl(item.content) }
+      return { ...item, fromAvatar: normalizedAvatar, content: normalizeResourceUrl(item.content) }
     }
     if (item.contentType === 'audio') {
       try {
         const parsed = JSON.parse(item.content) as { url?: string; duration?: number }
         if (parsed.url) {
           parsed.url = normalizeResourceUrl(parsed.url)
-          return { ...item, content: JSON.stringify(parsed) }
+          return { ...item, fromAvatar: normalizedAvatar, content: JSON.stringify(parsed) }
         }
       } catch {
-        return { ...item, content: normalizeResourceUrl(item.content) }
+        return { ...item, fromAvatar: normalizedAvatar, content: normalizeResourceUrl(item.content) }
       }
     }
-    return item
+    return { ...item, fromAvatar: normalizedAvatar }
   })
 }
 
@@ -186,8 +188,9 @@ export type FriendRequestItem = {
 }
 
 export async function listFriendRequests() {
-  const list = await request<FriendRequestItem[]>('/api/friend/requests')
-  return list.map((item) => ({
+  const list = await request<FriendRequestItem[] | null>('/api/friend/requests')
+  const safeList = Array.isArray(list) ? list : []
+  return safeList.map((item) => ({
     ...item,
     avatar: normalizeResourceUrl(item.avatar),
   }))
@@ -259,7 +262,15 @@ export async function unblockFriend(friendId: number) {
   })
 }
 
-export async function updateProfile(data: { nickname?: string; avatar?: string; signature?: string; gender?: number }) {
+export async function updateProfile(data: {
+  nickname?: string
+  avatar?: string
+  signature?: string
+  gender?: number
+  phone?: string
+  location?: string
+  birthday?: string
+}) {
   const profile = await request<UserProfile>('/api/profile', {
     method: 'PUT',
     body: JSON.stringify(data),

@@ -37,6 +37,9 @@ const profileForm = ref({
   avatar: '',
   signature: '',
   gender: 0,
+  phone: '',
+  location: '',
+  birthday: '',
 })
 
 const switchTab = (tab: string) => {
@@ -73,7 +76,8 @@ const openFriendRequests = async () => {
     friendRequests.value = await listFriendRequests()
     pendingFriendCount.value = friendRequests.value.length
   } catch (error) {
-    ElMessage.error('获取列表失败')
+    const msg = error instanceof Error ? error.message : '获取列表失败'
+    ElMessage.error(msg)
   }
 }
 
@@ -123,6 +127,9 @@ const openProfileEdit = () => {
       avatar: auth.user.avatar || '',
       signature: auth.user.signature || '',
       gender: auth.user.gender || 0,
+      phone: auth.user.phone || '',
+      location: auth.user.location || '',
+      birthday: auth.user.birthday || '',
     }
   }
   showProfileEdit.value = true
@@ -698,7 +705,6 @@ onBeforeUnmount(() => {
     <main class="wechat-chat">
       <template v-if="chat.activeConversationId">
         <ChatHeader
-          @more="openGroupInfo"
           @group-manage="openGroupInfo"
           @audio-call="startCall('audio')"
           @video-call="startCall('video')"
@@ -799,6 +805,28 @@ onBeforeUnmount(() => {
         <el-form-item label="签名">
           <el-input v-model="profileForm.signature" />
         </el-form-item>
+        <el-form-item label="性别">
+          <el-select v-model="profileForm.gender" placeholder="请选择性别" style="width: 100%">
+            <el-option :value="0" label="保密" />
+            <el-option :value="1" label="男" />
+            <el-option :value="2" label="女" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="手机">
+          <el-input v-model="profileForm.phone" placeholder="请输入手机号" />
+        </el-form-item>
+        <el-form-item label="地区">
+          <el-input v-model="profileForm.location" placeholder="请输入地区" />
+        </el-form-item>
+        <el-form-item label="生日">
+          <el-date-picker
+            v-model="profileForm.birthday"
+            type="date"
+            value-format="YYYY-MM-DD"
+            placeholder="请选择生日"
+            style="width: 100%"
+          />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="showProfileEdit = false">取消</el-button>
@@ -817,6 +845,15 @@ onBeforeUnmount(() => {
         </el-input>
         <div class="group-results">
           <div v-for="g in groupResults" :key="g.id" class="group-item">
+            <div class="group-item-avatar">
+              <img v-if="g.avatar" :src="g.avatar" />
+              <svg v-else viewBox="0 0 24 24" class="group-item-icon">
+                <path
+                  fill="currentColor"
+                  d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5Z"
+                />
+              </svg>
+            </div>
             <div class="group-name">{{ g.name }}</div>
             <el-button size="small" type="primary" @click="onJoinGroup(g)">加入</el-button>
           </div>
@@ -836,6 +873,15 @@ onBeforeUnmount(() => {
         <div class="group-title">我的群聊</div>
         <div class="group-results">
           <div v-for="g in myGroups" :key="g.id" class="group-item">
+            <div class="group-item-avatar">
+              <img v-if="g.avatar" :src="g.avatar" />
+              <svg v-else viewBox="0 0 24 24" class="group-item-icon">
+                <path
+                  fill="currentColor"
+                  d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5Z"
+                />
+              </svg>
+            </div>
             <div class="group-name">{{ g.name }}</div>
             <el-button size="small" @click="chat.selectConversation(`g_${g.id}`); showGroupDialog = false">进入</el-button>
           </div>
@@ -852,7 +898,11 @@ onBeforeUnmount(() => {
         <div class="group-info-header">
           <div class="group-avatar" @click="onGroupAvatarClick">
             <img v-if="groupForm.avatar" :src="groupForm.avatar" />
-            <div v-else class="avatar-placeholder">群</div>
+            <div v-else class="avatar-placeholder">
+              <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+                <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3Zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3Zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5Zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5Z"/>
+              </svg>
+            </div>
             <div class="upload-mask"><span>更换</span></div>
           </div>
           <input
@@ -1170,12 +1220,37 @@ onBeforeUnmount(() => {
 .group-item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 8px 4px;
   border-bottom: 1px solid #f0f0f0;
 }
 
+.group-item-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  background: #d9dde3;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+
+.group-item-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.group-item-icon {
+  width: 16px;
+  height: 16px;
+}
+
 .group-name {
+  flex: 1;
   font-size: 14px;
   color: #111827;
 }

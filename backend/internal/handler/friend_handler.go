@@ -28,13 +28,13 @@ type handleFriendRequest struct {
 }
 
 type userSearchResult struct {
-	ID       int64  `json:"id"`
-	Username string `json:"username"`
-	Nickname string `json:"nickname"`
-	Avatar   string `json:"avatar"`
-	IsFriend bool   `json:"isFriend"`
-	Pending  bool   `json:"pending"`
-	PendingFromMe bool `json:"pendingFromMe"`
+	ID            int64  `json:"id"`
+	Username      string `json:"username"`
+	Nickname      string `json:"nickname"`
+	Avatar        string `json:"avatar"`
+	IsFriend      bool   `json:"isFriend"`
+	Pending       bool   `json:"pending"`
+	PendingFromMe bool   `json:"pendingFromMe"`
 }
 
 // SearchUser 搜索用户
@@ -90,12 +90,12 @@ func SearchUser(c *gin.Context) {
 		}
 
 		results = append(results, userSearchResult{
-			ID:       u.ID,
-			Username: u.Username,
-			Nickname: nickname,
-			Avatar:   profile.Avatar,
-			IsFriend: count > 0,
-			Pending:  pending,
+			ID:            u.ID,
+			Username:      u.Username,
+			Nickname:      nickname,
+			Avatar:        profile.Avatar,
+			IsFriend:      count > 0,
+			Pending:       pending,
 			PendingFromMe: pendingFromMe,
 		})
 	}
@@ -175,7 +175,7 @@ func ListFriendRequests(c *gin.Context) {
 		Time       int64  `json:"time"`
 	}
 
-	var result []requestWithProfile
+	result := make([]requestWithProfile, 0, len(requests))
 	for _, r := range requests {
 		var account model.UserAccount
 		var profile model.UserProfile

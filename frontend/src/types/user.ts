@@ -5,4 +5,7 @@ export interface UserProfile {
   avatar: string
   signature?: string
   gender?: number
+  phone?: string
+  location?: string
+  birthday?: string
 }

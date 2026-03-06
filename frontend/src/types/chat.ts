@@ -17,6 +17,7 @@ export type Contact = {
 export type Message = {
   id: string
   fromId: string
+  fromAvatar?: string
   content: string
   contentType: 'text' | 'file' | 'image' | 'video' | 'audio'
   time: number

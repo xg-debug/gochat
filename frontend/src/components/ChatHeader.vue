@@ -5,7 +5,6 @@ import type { Conversation } from '../types/chat'
 
 const chat = useChatStore()
 const emit = defineEmits<{
-  (event: 'more'): void
   (event: 'audio-call'): void
   (event: 'video-call'): void
   (event: 'group-manage'): void
@@ -40,7 +39,7 @@ const isGroupChat = computed(() => {
       <div class="chat-subtitle">{{ activeSubtitle }}</div>
     </div>
     <div class="chat-actions">
-      <button v-if="isGroupChat" class="icon-btn" title="群成员" @click="emit('group-manage')">
+      <button v-if="isGroupChat" class="icon-btn" title="群信息" @click="emit('group-manage')">
         <svg viewBox="0 0 24 24" class="icon">
           <path
             fill="currentColor"
@@ -61,14 +60,6 @@ const isGroupChat = computed(() => {
           <path
             fill="currentColor"
             d="M4 6h10a2 2 0 0 1 2 2v1.4l4-2.4v10l-4-2.4V16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"
-          />
-        </svg>
-      </button>
-      <button class="icon-btn" title="更多" @click="emit('more')">
-        <svg viewBox="0 0 24 24" class="icon">
-          <path
-            fill="currentColor"
-            d="M5 12a2 2 0 1 0 0.001-3.999A2 2 0 0 0 5 12Zm7 0a2 2 0 1 0 0.001-3.999A2 2 0 0 0 12 12Zm7 0a2 2 0 1 0 0.001-3.999A2 2 0 0 0 19 12Z"
           />
         </svg>
       </button>
