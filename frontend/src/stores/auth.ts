@@ -3,9 +3,11 @@ import { defineStore } from 'pinia'
 import { loginRequest, profileRequest, registerRequest } from '../services/api'
 import type { UserProfile } from '../types/user'
 
-// 认证与用户信息
+// 登录认证与用户信息
 export const useAuthStore = defineStore('auth', () => {
+  // 登录凭证
   const token = ref(localStorage.getItem('token') || '')
+  // 用户信息
   const user = ref<UserProfile | null>(null)
   try {
     const savedUser = localStorage.getItem('user')

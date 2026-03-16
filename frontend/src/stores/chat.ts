@@ -6,13 +6,19 @@ import { decodePayload, encodePayload, WsClient, type WsMessage } from '../servi
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
-// 聊天数据状态与消息分发
+// 聊天数据管理 + WebSocket连接 + 消息分发 + 会话管理
 export const useChatStore = defineStore('chat', () => {
+  // 会话列表
   const conversations = ref<Conversation[]>([])
+  // 联系人列表
   const contacts = ref<Contact[]>([])
+  // 消息映射表（会话ID -> 消息列表）
   const messageMap = ref<Record<string, Message[]>>({})
+  // 当前激活会话ID（当前聊天）
   const activeConversationId = ref<string>('')
+  // WebSocket客户端实例
   const wsClient = ref<WsClient | null>(null)
+  // 当前用户ID
   const currentUserId = ref(0)
 
   const activeMessages = computed(() => {
@@ -23,6 +29,7 @@ export const useChatStore = defineStore('chat', () => {
     return conversations.value.find((item) => item.id === activeConversationId.value)
   })
 
+  // 初始化聊天数据：加载会话->加载联系人->设置默认激活会话
   async function bootstrap() {
     conversations.value = await fetchConversations()
     contacts.value = await fetchContacts()
@@ -39,6 +46,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 切换聊天窗口（切换会话）：更新激活会话ID->加载消息->更新未读计数
   async function selectConversation(conversationId: string) {
     activeConversationId.value = conversationId
     if (!messageMap.value[conversationId]) {
@@ -60,6 +68,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 从联系人发起聊天-启动新会话（单聊）：点击联系人->生成会话ID->判断会话是否存在
   function startConversation(contactId: string) {
     // 规范化会话ID：单聊用户ID统一加 u_ 前缀
     const targetConvId = contactId.startsWith('u_') ? contactId : `u_${contactId}`
@@ -86,6 +95,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 建立WebSocket连接：初始化WS客户端->设置消息处理->连接
   function connect(userId: number, token: string) {
     if (wsClient.value || !token) return
     currentUserId.value = userId
@@ -94,11 +104,13 @@ export const useChatStore = defineStore('chat', () => {
     wsClient.value.connect()
   }
 
+  // 断开WebSocket连接：关闭WS客户端->清除实例
   function disconnect() {
     wsClient.value?.disconnect()
     wsClient.value = null
   }
 
+  // 退出登录时调用：重置聊天数据->断开WS连接
   function reset() {
     conversations.value = []
     contacts.value = []
@@ -108,6 +120,7 @@ export const useChatStore = defineStore('chat', () => {
     disconnect()
   }
 
+  // 发送消息：创建本地消息->添加到映射messageMap->更新会话的lastMessage->发送WS消息
   function sendMessage(
     toId: number,
     content: string,
@@ -116,6 +129,7 @@ export const useChatStore = defineStore('chat', () => {
     const conversationId = activeConversationId.value
     if (!conversationId) return
     const isGroup = conversationId.startsWith('g_')
+    // tempId 是客户端生成的临时消息ID，用来在服务器返回真实 messageId 之前，标识本地消息。
     const tempId = `local_${Date.now()}`
     const newMessage: Message = {
       id: tempId,
@@ -128,6 +142,7 @@ export const useChatStore = defineStore('chat', () => {
     if (!messageMap.value[conversationId]) {
       messageMap.value[conversationId] = []
     }
+    // 添加到会话的消息列表（UI界面），此时聊天界面立即显示发送的消息
     messageMap.value[conversationId].push(newMessage)
     const conversation = conversations.value.find(
       (item: Conversation) => item.id === conversationId,
@@ -146,15 +161,16 @@ export const useChatStore = defineStore('chat', () => {
     }
     wsClient.value?.send({
       type: isGroup ? 'group' : 'single',
-      from_id: currentUserId.value || 1,
+      from_id: currentUserId.value,
       to_id: toId,
       payload: encodePayload({ content, contentType, tempId }),
     })
   }
 
 
+  // 处理WebSocket收到的所有消息 ｜ 接收消息：根据类型分类处理->更新本地消息状态->触发事件
   function handleIncomingMessage(message: WsMessage) {
-    if (message.type === 'ack') {
+    if (message.type === 'ack') { // 确认消息送达
       try {
         const payload = JSON.parse(atob(message.payload)) as {
           tempId?: string
@@ -174,7 +190,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       return
     }
-    if (message.type === 'call') {
+    if (message.type === 'call') { // 语音/视频信令
       let payload: Record<string, unknown> = {}
       const decoded = decodePayload(message.payload)
       if (decoded?.extra && typeof decoded.extra === 'object') {
@@ -201,7 +217,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       return
     }
-    if (message.type === 'presence') {
+    if (message.type === 'presence') { // 好友在线状态更新
       let online = false
       const decoded = decodePayload(message.payload)
       if (decoded?.extra && typeof decoded.extra.online !== 'undefined') {
@@ -227,7 +243,7 @@ export const useChatStore = defineStore('chat', () => {
       })
       return
     }
-    if (message.type === 'read' || message.type === 'revoke') {
+    if (message.type === 'read' || message.type === 'revoke') { // 暂未实现
       return
     }
     const decoded = decodePayload(message.payload)
@@ -304,6 +320,7 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  // 发送语音/视频信令：创建WS消息->发送
   function sendCallSignal(toId: number, payload: Record<string, unknown>) {
     wsClient.value?.send({
       type: 'call',
