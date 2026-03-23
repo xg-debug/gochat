@@ -68,13 +68,13 @@ func readLoop(hub *ws.Hub, client *ws.Client, logger *zap.Logger) {
 		var msg ws.WSMessage
 		if err := client.Conn.ReadJSON(&msg); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				logger.Warn("WebSocket read error", 
-					zap.Uint64("user_id", client.UserID), 
+				logger.Warn("WebSocket read error",
+					zap.Uint64("user_id", client.UserID),
 					zap.Error(err))
 			}
 			break
 		}
-		
+
 		msg.FromID = client.UserID
 		if msg.Type == "heartbeat" {
 			client.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -101,15 +101,15 @@ func writeLoop(client *ws.Client, logger *zap.Logger) {
 				client.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			
+
 			client.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := client.Conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				logger.Warn("WebSocket write error", 
-					zap.Uint64("user_id", client.UserID), 
+				logger.Warn("WebSocket write error",
+					zap.Uint64("user_id", client.UserID),
 					zap.Error(err))
 				return
 			}
-			
+
 		case <-ticker.C:
 			// 发送心跳
 			client.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))

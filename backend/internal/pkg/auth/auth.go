@@ -83,8 +83,11 @@ func AuthMiddleware() gin.HandlerFunc {
 			c.AbortWithStatusJSON(401, gin.H{"error": "invalid token"})
 			return
 		}
-		c.Set("user_id", uint64(claims.UserID))
+		uid := uint64(claims.UserID)
+		// Keep all legacy keys for backward compatibility across handlers/services/ws.
+		c.Set("user_id", uid)
 		c.Set("userID", int64(claims.UserID))
+		c.Set("userId", uid)
 		c.Set("username", claims.Username)
 		c.Next()
 	}

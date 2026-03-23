@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
@@ -195,16 +195,34 @@ const groupAvatarInput = ref<HTMLInputElement | null>(null)
 const callVisible = ref(false)
 const callStatus = ref<'idle' | 'calling' | 'ringing' | 'in-call'>('idle')
 const callType = ref<'audio' | 'video'>('video')
+const callScope = ref<'single' | 'group'>('single')
+const callGroupId = ref<number | null>(null)
 const callPeerId = ref<number | null>(null)
 const localVideoRef = ref<HTMLVideoElement | null>(null)
-const remoteVideoRef = ref<HTMLVideoElement | null>(null)
 const localStream = ref<MediaStream | null>(null)
-const remoteStream = ref<MediaStream | null>(null)
+const remoteStreams = ref<Record<number, MediaStream>>({})
 let peerConnection: RTCPeerConnection | null = null
 let pendingOffer: RTCSessionDescriptionInit | null = null
 const pendingCandidates: RTCIceCandidateInit[] = []
+const groupPeerConnections = new Map<number, RTCPeerConnection>()
+const groupPendingCandidates = new Map<number, RTCIceCandidateInit[]>()
+const remoteVideoRefs = new Map<number, HTMLVideoElement>()
 const isMuted = ref(false)
 const isCameraOff = ref(false)
+const groupInviteFrom = ref<number | null>(null)
+const groupCallStates = ref<Record<number, { callType: 'audio' | 'video'; hostId: number; participants: number[] }>>({})
+
+const remotePeerIds = computed(() => {
+  return Object.keys(remoteStreams.value).map((id) => Number(id))
+})
+
+const activeGroupCallState = computed(() => {
+  const conversationId = chat.activeConversationId
+  if (!conversationId || !conversationId.startsWith('g_')) return null
+  const groupId = Number(conversationId.replace('g_', ''))
+  if (!groupId) return null
+  return groupCallStates.value[groupId] || null
+})
 
 const openGroupDialog = async () => {
   showGroupDialog.value = true
@@ -345,6 +363,11 @@ const ensurePeerConnection = () => {
   peerConnection = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
   })
+  if (localStream.value) {
+    localStream.value.getTracks().forEach((track) => {
+      peerConnection?.addTrack(track, localStream.value as MediaStream)
+    })
+  }
   peerConnection.onicecandidate = (event) => {
     if (event.candidate && callPeerId.value) {
       chat.sendCallSignal(callPeerId.value, {
@@ -356,9 +379,8 @@ const ensurePeerConnection = () => {
   peerConnection.ontrack = (event) => {
     const firstStream = event.streams[0]
     if (!firstStream) return
-    remoteStream.value = firstStream
-    if (remoteVideoRef.value) {
-      remoteVideoRef.value.srcObject = remoteStream.value
+    if (callPeerId.value) {
+      setRemoteStream(callPeerId.value, firstStream)
     }
   }
   peerConnection.onconnectionstatechange = () => {
@@ -380,15 +402,17 @@ const startLocalStream = async (type: 'audio' | 'video') => {
   if (localVideoRef.value) {
     localVideoRef.value.srcObject = stream
   }
-  const pc = ensurePeerConnection()
-  stream.getTracks().forEach((track) => pc.addTrack(track, stream))
 }
 
 const cleanupCall = () => {
   callStatus.value = 'idle'
+  callScope.value = 'single'
+  callGroupId.value = null
+  groupInviteFrom.value = null
   callPeerId.value = null
   pendingOffer = null
   pendingCandidates.length = 0
+  groupPendingCandidates.clear()
   isMuted.value = false
   isCameraOff.value = false
   if (peerConnection) {
@@ -399,11 +423,196 @@ const cleanupCall = () => {
     localStream.value.getTracks().forEach((t) => t.stop())
     localStream.value = null
   }
-  if (remoteStream.value) {
-    remoteStream.value.getTracks().forEach((t) => t.stop())
-    remoteStream.value = null
-  }
+  groupPeerConnections.forEach((pc) => pc.close())
+  groupPeerConnections.clear()
+  remoteVideoRefs.forEach((video) => {
+    video.srcObject = null
+  })
+  remoteStreams.value = {}
+  remoteVideoRefs.clear()
   callVisible.value = false
+}
+
+const setRemoteVideoRef = (peerId: number, element: Element | null) => {
+  const video = element as HTMLVideoElement | null
+  if (!video) {
+    remoteVideoRefs.delete(peerId)
+    return
+  }
+  remoteVideoRefs.set(peerId, video)
+  const stream = remoteStreams.value[peerId]
+  if (stream) {
+    video.srcObject = stream
+  }
+}
+
+const setRemoteStream = (peerId: number, stream: MediaStream) => {
+  remoteStreams.value = {
+    ...remoteStreams.value,
+    [peerId]: stream,
+  }
+  const video = remoteVideoRefs.get(peerId)
+  if (video) {
+    video.srcObject = stream
+  }
+}
+
+const removeRemotePeer = (peerId: number) => {
+  const pc = groupPeerConnections.get(peerId)
+  if (pc) {
+    pc.close()
+    groupPeerConnections.delete(peerId)
+  }
+  groupPendingCandidates.delete(peerId)
+  const next = { ...remoteStreams.value }
+  delete next[peerId]
+  remoteStreams.value = next
+  const video = remoteVideoRefs.get(peerId)
+  if (video) {
+    video.srcObject = null
+  }
+  remoteVideoRefs.delete(peerId)
+}
+
+const getCurrentUserId = () => Number(auth.user?.id || 0)
+
+const setGroupCallState = (groupId: number, data: { callType?: 'audio' | 'video'; hostId?: number; participants?: number[] }) => {
+  const prev = groupCallStates.value[groupId]
+  groupCallStates.value = {
+    ...groupCallStates.value,
+    [groupId]: {
+      callType: data.callType || prev?.callType || 'video',
+      hostId: data.hostId || prev?.hostId || 0,
+      participants: data.participants || prev?.participants || [],
+    },
+  }
+}
+
+const clearGroupCallState = (groupId: number) => {
+  if (!groupCallStates.value[groupId]) return
+  const next = { ...groupCallStates.value }
+  delete next[groupId]
+  groupCallStates.value = next
+}
+
+const requestGroupCallState = (groupId: number) => {
+  if (!groupId) return
+  chat.sendCallSignal(groupId, {
+    scope: 'group',
+    groupId,
+    action: 'group-state-query',
+  })
+}
+
+const ensureGroupPeerConnection = (peerId: number, groupId: number) => {
+  const existing = groupPeerConnections.get(peerId)
+  if (existing) return existing
+  const pc = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+  })
+  if (localStream.value) {
+    localStream.value.getTracks().forEach((track) => {
+      pc.addTrack(track, localStream.value as MediaStream)
+    })
+  }
+  pc.onicecandidate = (event) => {
+    if (!event.candidate) return
+    chat.sendCallSignal(groupId, {
+      scope: 'group',
+      groupId,
+      action: 'group-candidate',
+      targetId: peerId,
+      candidate: event.candidate,
+    })
+  }
+  pc.ontrack = (event) => {
+    const stream = event.streams[0]
+    if (!stream) return
+    setRemoteStream(peerId, stream)
+  }
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected' || pc.connectionState === 'closed') {
+      removeRemotePeer(peerId)
+    }
+  }
+  groupPeerConnections.set(peerId, pc)
+  return pc
+}
+
+const queueGroupCandidate = (peerId: number, candidate: RTCIceCandidateInit) => {
+  const list = groupPendingCandidates.get(peerId) || []
+  list.push(candidate)
+  groupPendingCandidates.set(peerId, list)
+}
+
+const flushGroupCandidates = async (peerId: number, pc: RTCPeerConnection) => {
+  const list = groupPendingCandidates.get(peerId) || []
+  groupPendingCandidates.delete(peerId)
+  for (const candidate of list) {
+    await pc.addIceCandidate(candidate)
+  }
+}
+
+const createGroupOfferTo = async (peerId: number, groupId: number) => {
+  if (!localStream.value) return
+  const pc = ensureGroupPeerConnection(peerId, groupId)
+  if (pc.signalingState !== 'stable') return
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  chat.sendCallSignal(groupId, {
+    scope: 'group',
+    groupId,
+    action: 'group-offer',
+    targetId: peerId,
+    sdp: offer,
+    callType: callType.value,
+  })
+}
+
+const startGroupCall = async (type: 'audio' | 'video', groupId: number) => {
+  callScope.value = 'group'
+  callGroupId.value = groupId
+  callType.value = type
+  callVisible.value = true
+  callStatus.value = 'calling'
+  await startLocalStream(type)
+  callStatus.value = 'in-call'
+  setGroupCallState(groupId, {
+    callType: type,
+    hostId: getCurrentUserId(),
+    participants: [getCurrentUserId()],
+  })
+  chat.sendCallSignal(groupId, {
+    scope: 'group',
+    groupId,
+    action: 'group-initiate',
+    callType: type,
+  })
+}
+
+const joinActiveGroupCall = async () => {
+  if (callStatus.value !== 'idle') {
+    ElMessage.warning('当前已有通话')
+    return
+  }
+  const conversationId = chat.activeConversationId
+  if (!conversationId || !conversationId.startsWith('g_')) return
+  const groupId = Number(conversationId.replace('g_', ''))
+  const state = groupCallStates.value[groupId]
+  if (!groupId || !state) return
+  callScope.value = 'group'
+  callGroupId.value = groupId
+  callType.value = state.callType
+  callVisible.value = true
+  callStatus.value = 'calling'
+  await startLocalStream(state.callType)
+  callStatus.value = 'in-call'
+  chat.sendCallSignal(groupId, {
+    scope: 'group',
+    groupId,
+    action: 'group-join',
+    callType: state.callType,
+  })
 }
 
 const toggleMute = () => {
@@ -431,12 +640,24 @@ const startCall = async (type: 'audio' | 'video') => {
     return
   }
   const conversationId = chat.activeConversationId
-  if (!conversationId || !conversationId.startsWith('u_')) {
-    ElMessage.error('请选择单人会话')
+  if (!conversationId) {
+    ElMessage.error('请选择会话')
+    return
+  }
+  if (conversationId.startsWith('g_')) {
+    const groupId = Number(conversationId.replace('g_', ''))
+    if (!groupId) return
+    await startGroupCall(type, groupId)
+    return
+  }
+  if (!conversationId.startsWith('u_')) {
+    ElMessage.error('请选择会话')
     return
   }
   const peerId = Number(conversationId.replace('u_', ''))
   if (!peerId) return
+  callScope.value = 'single'
+  callGroupId.value = null
   callType.value = type
   callPeerId.value = peerId
   callVisible.value = true
@@ -453,6 +674,29 @@ const startCall = async (type: 'audio' | 'video') => {
 }
 
 const acceptCall = async () => {
+  if (callScope.value === 'group') {
+    if (!callGroupId.value) return
+    await startLocalStream(callType.value)
+    callStatus.value = 'in-call'
+    const groupId = callGroupId.value
+    const myId = getCurrentUserId()
+    const prevParticipants = groupCallStates.value[groupId]?.participants || []
+    setGroupCallState(groupId, {
+      callType: callType.value,
+      hostId: groupInviteFrom.value || groupCallStates.value[groupId]?.hostId || 0,
+      participants: prevParticipants.includes(myId)
+        ? prevParticipants
+        : [...prevParticipants, myId],
+    })
+    chat.sendCallSignal(groupId, {
+      scope: 'group',
+      groupId,
+      action: 'group-join',
+      callType: callType.value,
+    })
+    groupInviteFrom.value = null
+    return
+  }
   if (!pendingOffer || !callPeerId.value) return
   await startLocalStream(callType.value)
   const pc = ensurePeerConnection()
@@ -471,6 +715,26 @@ const acceptCall = async () => {
 }
 
 const rejectCall = () => {
+  if (callScope.value === 'group' && callGroupId.value) {
+    const myId = getCurrentUserId()
+    const groupId = callGroupId.value
+    const state = groupCallStates.value[groupId]
+    if (state) {
+      setGroupCallState(groupId, {
+        callType: state.callType,
+        hostId: state.hostId,
+        participants: state.participants.filter((id) => id !== myId),
+      })
+    }
+    chat.sendCallSignal(callGroupId.value, {
+      scope: 'group',
+      groupId: callGroupId.value,
+      action: 'group-reject',
+      targetId: groupInviteFrom.value,
+    })
+    cleanupCall()
+    return
+  }
   if (callPeerId.value) {
     chat.sendCallSignal(callPeerId.value, { action: 'reject' })
   }
@@ -478,6 +742,30 @@ const rejectCall = () => {
 }
 
 const hangupCall = () => {
+  if (callScope.value === 'group' && callGroupId.value) {
+    const myId = getCurrentUserId()
+    const groupId = callGroupId.value
+    const state = groupCallStates.value[groupId]
+    if (state) {
+      const participants = state.participants.filter((id) => id !== myId)
+      if (participants.length === 0) {
+        clearGroupCallState(groupId)
+      } else {
+        setGroupCallState(groupId, {
+          callType: state.callType,
+          hostId: state.hostId,
+          participants,
+        })
+      }
+    }
+    chat.sendCallSignal(callGroupId.value, {
+      scope: 'group',
+      groupId: callGroupId.value,
+      action: 'group-leave',
+    })
+    cleanupCall()
+    return
+  }
   if (callPeerId.value) {
     chat.sendCallSignal(callPeerId.value, { action: 'hangup' })
   }
@@ -505,6 +793,12 @@ onMounted(async () => {
   if (auth.user?.id && auth.token) {
     chat.connect(auth.user.id, auth.token)
   }
+  if (chat.activeConversationId.startsWith('g_')) {
+    const groupId = Number(chat.activeConversationId.replace('g_', ''))
+    if (groupId) {
+      requestGroupCallState(groupId)
+    }
+  }
   await refreshFriendRequests()
   friendPollTimer = window.setInterval(refreshFriendRequests, 15000)
 })
@@ -518,6 +812,16 @@ watch(conversationKeyword, (value) => {
     await chat.searchConversations(value)
   }, 260)
 })
+
+watch(
+  () => chat.activeConversationId,
+  (conversationId) => {
+    if (!conversationId || !conversationId.startsWith('g_')) return
+    const groupId = Number(conversationId.replace('g_', ''))
+    if (!groupId) return
+    requestGroupCallState(groupId)
+  },
+)
 
 onBeforeUnmount(() => {
   chat.disconnect()
@@ -565,8 +869,151 @@ onBeforeUnmount(() => {
 const onCallSignal = async (event: Event) => {
   const detail = (event as CustomEvent).detail as {
     fromId: number
+    toId?: number
     payload: Record<string, unknown>
   }
+  const scope = detail.payload?.scope as string | undefined
+  if (scope === 'group') {
+    const myId = getCurrentUserId()
+    if (!myId) return
+    const action = detail.payload?.action as string
+    const groupId = Number(detail.payload?.groupId || detail.toId || 0)
+    if (!groupId) return
+    const incomingType = (detail.payload?.callType as 'audio' | 'video') || 'video'
+
+    if (action === 'group-state') {
+      const active = Boolean(detail.payload?.active)
+      if (!active) {
+        clearGroupCallState(groupId)
+        return
+      }
+      const hostId = Number(detail.payload?.hostId || detail.fromId || 0)
+      const participantsRaw = Array.isArray(detail.payload?.participants)
+        ? (detail.payload?.participants as unknown[])
+        : []
+      const participants = participantsRaw
+        .map((item) => Number(item))
+        .filter((id) => Number.isFinite(id) && id > 0)
+      setGroupCallState(groupId, {
+        callType: incomingType,
+        hostId,
+        participants,
+      })
+      return
+    }
+
+    if (action === 'group-initiate') {
+      if (detail.fromId === myId) return
+      setGroupCallState(groupId, {
+        callType: incomingType,
+        hostId: detail.fromId,
+        participants: [detail.fromId],
+      })
+      if (callStatus.value !== 'idle') return
+      callScope.value = 'group'
+      callGroupId.value = groupId
+      groupInviteFrom.value = detail.fromId
+      callType.value = incomingType
+      callVisible.value = true
+      callStatus.value = 'ringing'
+      return
+    }
+    if (action === 'group-join') {
+      if (detail.fromId === myId) return
+      const prevParticipants = groupCallStates.value[groupId]?.participants || []
+      setGroupCallState(groupId, {
+        callType: incomingType,
+        hostId: groupCallStates.value[groupId]?.hostId || detail.fromId,
+        participants: prevParticipants.includes(detail.fromId)
+          ? prevParticipants
+          : [...prevParticipants, detail.fromId],
+      })
+      if (callScope.value !== 'group' || callGroupId.value !== groupId || !localStream.value) return
+      await createGroupOfferTo(detail.fromId, groupId)
+      return
+    }
+    if (action === 'group-offer') {
+      const targetId = Number(detail.payload?.targetId || 0)
+      if (targetId !== myId || detail.fromId === myId) return
+      if (!localStream.value) {
+        await startLocalStream((detail.payload?.callType as 'audio' | 'video') || callType.value)
+      }
+      const prevParticipants = groupCallStates.value[groupId]?.participants || []
+      setGroupCallState(groupId, {
+        callType: incomingType,
+        hostId: groupCallStates.value[groupId]?.hostId || detail.fromId,
+        participants: prevParticipants.includes(myId)
+          ? prevParticipants
+          : [...prevParticipants, myId],
+      })
+      callScope.value = 'group'
+      callGroupId.value = groupId
+      callVisible.value = true
+      callStatus.value = 'in-call'
+      const sdp = detail.payload?.sdp as RTCSessionDescriptionInit
+      if (!sdp) return
+      const pc = ensureGroupPeerConnection(detail.fromId, groupId)
+      await pc.setRemoteDescription(sdp)
+      await flushGroupCandidates(detail.fromId, pc)
+      const answer = await pc.createAnswer()
+      await pc.setLocalDescription(answer)
+      chat.sendCallSignal(groupId, {
+        scope: 'group',
+        groupId,
+        action: 'group-answer',
+        targetId: detail.fromId,
+        sdp: answer,
+        callType: callType.value,
+      })
+      return
+    }
+    if (action === 'group-answer') {
+      const targetId = Number(detail.payload?.targetId || 0)
+      if (targetId !== myId) return
+      const pc = groupPeerConnections.get(detail.fromId)
+      const sdp = detail.payload?.sdp as RTCSessionDescriptionInit
+      if (!pc || !sdp) return
+      await pc.setRemoteDescription(sdp)
+      await flushGroupCandidates(detail.fromId, pc)
+      return
+    }
+    if (action === 'group-candidate') {
+      const targetId = Number(detail.payload?.targetId || 0)
+      if (targetId !== myId) return
+      const candidate = detail.payload?.candidate as RTCIceCandidateInit
+      if (!candidate) return
+      const pc = groupPeerConnections.get(detail.fromId)
+      if (pc && pc.remoteDescription) {
+        await pc.addIceCandidate(candidate)
+      } else {
+        queueGroupCandidate(detail.fromId, candidate)
+      }
+      return
+    }
+    if (action === 'group-leave') {
+      if (detail.fromId === myId) return
+      const state = groupCallStates.value[groupId]
+      if (state) {
+        const participants = state.participants.filter((id) => id !== detail.fromId)
+        if (participants.length === 0) {
+          clearGroupCallState(groupId)
+        } else {
+          setGroupCallState(groupId, {
+            callType: state.callType,
+            hostId: state.hostId,
+            participants,
+          })
+        }
+      }
+      removeRemotePeer(detail.fromId)
+      return
+    }
+    if (action === 'group-reject') {
+      return
+    }
+    return
+  }
+
   const action = detail.payload?.action as string
   if (!detail.fromId) return
   if (action === 'offer') {
@@ -709,6 +1156,13 @@ onBeforeUnmount(() => {
           @audio-call="startCall('audio')"
           @video-call="startCall('video')"
         />
+        <div
+          v-if="chat.activeConversationId.startsWith('g_') && activeGroupCallState && callStatus === 'idle'"
+          class="group-call-banner"
+        >
+          <span>群内正在{{ activeGroupCallState.callType === 'video' ? '视频' : '语音' }}通话</span>
+          <el-button size="small" type="success" @click="joinActiveGroupCall">加入通话</el-button>
+        </div>
         <MessageList />
         <MessageInput />
       </template>
@@ -971,10 +1425,21 @@ onBeforeUnmount(() => {
       <div class="call-card">
         <div class="call-header">
           <div class="call-title">{{ callStatus === 'ringing' ? '来电' : callStatus === 'calling' ? '呼叫中' : '通话中' }}</div>
-          <div class="call-type">{{ callType === 'video' ? '视频通话' : '语音通话' }}</div>
+          <div class="call-type">
+            {{ callType === 'video' ? '视频通话' : '语音通话' }} · {{ callScope === 'group' ? '群聊' : '单聊' }}
+          </div>
         </div>
-        <div class="call-body" :class="{ audio: callType === 'audio' }">
-          <video ref="remoteVideoRef" autoplay playsinline></video>
+        <div class="call-body" :class="{ audio: callType === 'audio', group: callScope === 'group' }">
+          <div class="remote-grid">
+            <video
+              v-for="peerId in remotePeerIds"
+              :key="peerId"
+              autoplay
+              playsinline
+              :ref="(el) => setRemoteVideoRef(peerId, el as Element | null)"
+            ></video>
+            <div v-if="remotePeerIds.length === 0" class="remote-placeholder">等待其他成员加入...</div>
+          </div>
           <video ref="localVideoRef" autoplay muted playsinline class="local-video"></video>
         </div>
         <div class="call-actions">
@@ -1117,6 +1582,19 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
+}
+
+.group-call-banner {
+  margin: 8px 14px 6px;
+  padding: 8px 12px;
+  border: 1px solid #b7eb8f;
+  background: #f6ffed;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: #237804;
+  font-size: 13px;
 }
 
 .empty-state {
@@ -1389,12 +1867,34 @@ onBeforeUnmount(() => {
   border-radius: 12px;
   min-height: 320px;
   overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
 }
 
-.call-body video {
+.remote-grid {
   width: 100%;
-  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.remote-grid video {
+  width: 100%;
+  height: 220px;
   object-fit: cover;
+  border-radius: 10px;
+}
+
+.remote-placeholder {
+  min-height: 220px;
+  border-radius: 10px;
+  color: #94a3b8;
+  background: rgba(148, 163, 184, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .call-body.audio {
@@ -1409,6 +1909,10 @@ onBeforeUnmount(() => {
   height: 100px;
   border-radius: 10px;
   border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.call-body.audio .remote-grid video {
+  display: none;
 }
 
 .call-actions {

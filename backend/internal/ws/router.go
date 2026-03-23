@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gochat/internal/model"
@@ -13,11 +14,25 @@ import (
 // 分发逻辑
 
 type chatPayload struct {
-	Content     string `json:"content"`
-	ContentType string `json:"contentType"`
-	TempID      string `json:"tempId"`
+	Content     string                 `json:"content"`
+	ContentType string                 `json:"contentType"`
+	TempID      string                 `json:"tempId"`
 	Extra       map[string]interface{} `json:"extra"`
 }
+
+type groupCallSession struct {
+	GroupID      uint64
+	HostID       uint64
+	CallType     string
+	Participants map[uint64]time.Time
+	UpdatedAt    time.Time
+}
+
+var (
+	groupCallMu       sync.RWMutex
+	groupCallSessions = map[uint64]*groupCallSession{}
+	groupCallTTL      = 30 * time.Minute
+)
 
 func RouteMessage(hub *Hub, msg *WSMessage) {
 	switch msg.Type {
@@ -34,6 +49,10 @@ func RouteMessage(hub *Hub, msg *WSMessage) {
 			saveMessageAndAck(hub, msg, 2)
 		}
 	case "call":
+		if isGroupCallSignal(msg) {
+			sendGroupCallSignal(hub, msg)
+			return
+		}
 		if client := hub.getClient(msg.ToID); client != nil {
 			data, _ := json.Marshal(msg)
 			client.Send <- data
@@ -50,6 +69,195 @@ func RouteMessage(hub *Hub, msg *WSMessage) {
 	default:
 		// logger.Info("unknown message type: %s", msg.Type)
 	}
+}
+
+func isGroupCallSignal(msg *WSMessage) bool {
+	if msg == nil || msg.ToID == 0 {
+		return false
+	}
+	var payload chatPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return false
+	}
+	if payload.Extra == nil {
+		return false
+	}
+	scope, _ := payload.Extra["scope"].(string)
+	return strings.EqualFold(scope, "group")
+}
+
+func parseGroupCallAction(payload chatPayload) (string, string) {
+	if payload.Extra == nil {
+		return "", "video"
+	}
+	action, _ := payload.Extra["action"].(string)
+	callType, _ := payload.Extra["callType"].(string)
+	callType = strings.ToLower(strings.TrimSpace(callType))
+	if callType != "audio" && callType != "video" {
+		callType = "video"
+	}
+	return strings.ToLower(strings.TrimSpace(action)), callType
+}
+
+func getGroupCallSession(groupID uint64) *groupCallSession {
+	groupCallMu.Lock()
+	defer groupCallMu.Unlock()
+	session := groupCallSessions[groupID]
+	if session == nil {
+		return nil
+	}
+	if time.Since(session.UpdatedAt) > groupCallTTL {
+		delete(groupCallSessions, groupID)
+		return nil
+	}
+	copied := &groupCallSession{
+		GroupID:      session.GroupID,
+		HostID:       session.HostID,
+		CallType:     session.CallType,
+		Participants: make(map[uint64]time.Time, len(session.Participants)),
+		UpdatedAt:    session.UpdatedAt,
+	}
+	for id, ts := range session.Participants {
+		copied.Participants[id] = ts
+	}
+	return copied
+}
+
+func upsertGroupCallSession(groupID, hostID, userID uint64, callType string) {
+	if groupID == 0 || userID == 0 {
+		return
+	}
+	groupCallMu.Lock()
+	defer groupCallMu.Unlock()
+	now := time.Now()
+	session := groupCallSessions[groupID]
+	if session == nil || time.Since(session.UpdatedAt) > groupCallTTL {
+		session = &groupCallSession{
+			GroupID:      groupID,
+			HostID:       hostID,
+			CallType:     callType,
+			Participants: map[uint64]time.Time{},
+		}
+		groupCallSessions[groupID] = session
+	}
+	if hostID > 0 {
+		session.HostID = hostID
+	}
+	if callType == "audio" || callType == "video" {
+		session.CallType = callType
+	}
+	session.Participants[userID] = now
+	session.UpdatedAt = now
+}
+
+func removeGroupCallParticipant(groupID, userID uint64) bool {
+	groupCallMu.Lock()
+	defer groupCallMu.Unlock()
+	session := groupCallSessions[groupID]
+	if session == nil {
+		return false
+	}
+	delete(session.Participants, userID)
+	session.UpdatedAt = time.Now()
+	if len(session.Participants) == 0 {
+		delete(groupCallSessions, groupID)
+		return true
+	}
+	return false
+}
+
+func sendGroupCallStateToUser(hub *Hub, userID, groupID uint64) {
+	if hub == nil || userID == 0 || groupID == 0 {
+		return
+	}
+	extra := map[string]interface{}{
+		"scope":   "group",
+		"groupId": groupID,
+		"action":  "group-state",
+		"active":  false,
+	}
+	fromID := uint64(0)
+	session := getGroupCallSession(groupID)
+	if session != nil {
+		extra["active"] = true
+		extra["hostId"] = session.HostID
+		extra["callType"] = session.CallType
+		participants := make([]uint64, 0, len(session.Participants))
+		for participantID := range session.Participants {
+			participants = append(participants, participantID)
+		}
+		extra["participants"] = participants
+		fromID = session.HostID
+	}
+	payloadRaw, err := json.Marshal(chatPayload{
+		Content:     "",
+		ContentType: "text",
+		Extra:       extra,
+	})
+	if err != nil {
+		return
+	}
+	resp := WSMessage{
+		Type:    "call",
+		FromID:  fromID,
+		ToID:    groupID,
+		Payload: payloadRaw,
+	}
+	if raw, err := json.Marshal(resp); err == nil {
+		if client := hub.getClient(userID); client != nil {
+			client.Send <- raw
+		}
+	}
+}
+
+func sendGroupCallSignal(hub *Hub, msg *WSMessage) bool {
+	if msg == nil || msg.ToID == 0 || msg.FromID == 0 {
+		return false
+	}
+	var payload chatPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
+		return false
+	}
+	action, callType := parseGroupCallAction(payload)
+	dbConn := db.GetDB()
+	if dbConn == nil {
+		return false
+	}
+	var memberCount int64
+	dbConn.Model(&model.GroupMember{}).
+		Where("group_id = ? AND user_id = ?", int64(msg.ToID), int64(msg.FromID)).
+		Count(&memberCount)
+	if memberCount == 0 {
+		return false
+	}
+	if action == "group-state-query" {
+		sendGroupCallStateToUser(hub, msg.FromID, msg.ToID)
+		return true
+	}
+	var members []model.GroupMember
+	if err := dbConn.Where("group_id = ?", int64(msg.ToID)).Find(&members).Error; err != nil {
+		return false
+	}
+	switch action {
+	case "group-initiate":
+		upsertGroupCallSession(msg.ToID, msg.FromID, msg.FromID, callType)
+	case "group-join":
+		upsertGroupCallSession(msg.ToID, msg.FromID, msg.FromID, callType)
+	case "group-offer", "group-answer", "group-candidate":
+		upsertGroupCallSession(msg.ToID, 0, msg.FromID, callType)
+	case "group-leave", "group-reject":
+		removeGroupCallParticipant(msg.ToID, msg.FromID)
+	}
+	data, _ := json.Marshal(msg)
+	for _, member := range members {
+		if uint64(member.UserID) == msg.FromID {
+			continue
+		}
+		if client := hub.getClient(uint64(member.UserID)); client != nil {
+			client.Send <- data
+		}
+	}
+	return true
 }
 
 func enrichPayloadWithSender(fromID uint64, payload []byte) []byte {

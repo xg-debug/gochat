@@ -59,6 +59,10 @@ export const useChatStore = defineStore('chat', () => {
       conversation.unread = 0
     }
     if (conversationId.startsWith('u_')) {
+      const peerId = Number(conversationId.replace('u_', ''))
+      if (peerId > 0) {
+        sendReadReceipt(peerId)
+      }
       const list = messageMap.value[conversationId] || []
       list.forEach((item) => {
         if (item.status !== 'revoked') {
@@ -243,7 +247,17 @@ export const useChatStore = defineStore('chat', () => {
       })
       return
     }
-    if (message.type === 'read' || message.type === 'revoke') { // 暂未实现
+    if (message.type === 'read') {
+      const conversationId = `u_${message.from_id}`
+      const list = messageMap.value[conversationId] || []
+      list.forEach((item) => {
+        if (item.fromId === `u_${currentUserId.value}` && item.status !== 'revoked') {
+          item.status = 'read'
+        }
+      })
+      return
+    }
+    if (message.type === 'revoke') { // 暂未实现
       return
     }
     const decoded = decodePayload(message.payload)
@@ -317,6 +331,11 @@ export const useChatStore = defineStore('chat', () => {
           },
         }),
       )
+    } else if (message.type === 'single') {
+      const peerId = Number(conversationId.replace('u_', ''))
+      if (peerId > 0) {
+        sendReadReceipt(peerId)
+      }
     }
   }
 
@@ -330,6 +349,19 @@ export const useChatStore = defineStore('chat', () => {
         content: '',
         contentType: 'text',
         extra: payload,
+      }),
+    })
+  }
+
+  function sendReadReceipt(toId: number) {
+    if (!toId) return
+    wsClient.value?.send({
+      type: 'read',
+      from_id: currentUserId.value || 1,
+      to_id: toId,
+      payload: encodePayload({
+        content: '',
+        contentType: 'text',
       }),
     })
   }
@@ -372,6 +404,7 @@ export const useChatStore = defineStore('chat', () => {
     disconnect,
     sendMessage,
     sendCallSignal,
+    sendReadReceipt,
     searchConversations,
     reset,
   }
