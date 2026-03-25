@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { Contact, Conversation, Message } from '../types/chat'
 import { fetchContacts, fetchConversations, fetchMessages, searchConversations as searchConversationsRequest } from '../services/api'
 import { decodePayload, encodePayload, WsClient, type WsMessage } from '../services/ws'
+import { messagePreview, parseConversationId } from '../utils/chat'
 
 const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`
 
@@ -132,7 +133,8 @@ export const useChatStore = defineStore('chat', () => {
   ) {
     const conversationId = activeConversationId.value
     if (!conversationId) return
-    const isGroup = conversationId.startsWith('g_')
+    const parsed = parseConversationId(conversationId)
+    const isGroup = parsed.kind === 'group'
     // tempId 是客户端生成的临时消息ID，用来在服务器返回真实 messageId 之前，标识本地消息。
     const tempId = `local_${Date.now()}`
     const newMessage: Message = {
@@ -152,16 +154,7 @@ export const useChatStore = defineStore('chat', () => {
       (item: Conversation) => item.id === conversationId,
     )
     if (conversation) {
-      conversation.lastMessage =
-        contentType === 'image'
-          ? '[图片]'
-          : contentType === 'audio'
-            ? '[语音]'
-            : contentType === 'file'
-              ? '[文件]'
-              : contentType === 'video'
-                ? '[视频]'
-                : content
+      conversation.lastMessage = messagePreview(content, contentType)
     }
     wsClient.value?.send({
       type: isGroup ? 'group' : 'single',
@@ -301,16 +294,7 @@ export const useChatStore = defineStore('chat', () => {
       }
       conversations.value.unshift(conversation)
     }
-    conversation.lastMessage =
-      incoming.contentType === 'image'
-        ? '[图片]'
-        : incoming.contentType === 'audio'
-          ? '[语音]'
-          : incoming.contentType === 'file'
-            ? '[文件]'
-            : incoming.contentType === 'video'
-              ? '[视频]'
-              : incoming.content
+    conversation.lastMessage = messagePreview(incoming.content, incoming.contentType)
     if (message.type === 'single') {
       conversation.online = true
       contacts.value.forEach((item) => {

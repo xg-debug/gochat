@@ -8,14 +8,6 @@ const conversations = computed(() => chat.conversations)
 function handleSelect(conversationId: string) {
   chat.selectConversation(conversationId)
 }
-
-function formatTime() {
-  const date = new Date()
-  return `${date.getHours().toString().padStart(2, '0')}:${date
-    .getMinutes()
-    .toString()
-    .padStart(2, '0')}`
-}
 </script>
 
 <template>
@@ -42,7 +34,6 @@ function formatTime() {
         <div class="conversation-body">
           <div class="conversation-row">
             <div class="conversation-name">{{ item.name }}</div>
-            <div class="conversation-time">{{ formatTime() }}</div>
           </div>
           <div class="conversation-row">
             <div class="conversation-last">{{ item.lastMessage }}</div>
@@ -128,11 +119,6 @@ function formatTime() {
   font-size: 14px;
   color: #111827;
   font-weight: 500;
-}
-
-.conversation-time {
-  font-size: 12px;
-  color: #94a3b8;
 }
 
 .conversation-last {

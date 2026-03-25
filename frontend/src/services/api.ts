@@ -43,6 +43,30 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return (await response.json()) as T
 }
 
+async function uploadResource(path: string, file: File) {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const token = localStorage.getItem('token') || ''
+  const headers = new Headers()
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`)
+  }
+
+  const response = await fetch(path, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!response.ok) {
+    throw new Error('上传失败')
+  }
+
+  const data = (await response.json()) as { url: string }
+  return normalizeResourceUrl(data.url)
+}
+
 export async function loginRequest(username: string, password: string) {
   const data = await request<{ token: string; user: UserProfile }>('/api/login', {
     method: 'POST',
@@ -280,121 +304,23 @@ export async function updateProfile(data: {
 }
 
 export async function uploadAvatar(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-  
-  const token = localStorage.getItem('token') || ''
-  const headers = new Headers()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-  
-  // Note: Content-Type is not set manually to let browser set boundary
-  const response = await fetch('/api/upload/avatar', {
-    method: 'POST',
-    headers,
-    body: formData,
-  })
-  
-  if (!response.ok) {
-    throw new Error('上传失败')
-  }
-  
-  const data = await response.json()
-  return normalizeResourceUrl(data.url as string)
+  return uploadResource('/api/upload/avatar', file)
 }
 
 export async function uploadChatImage(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const token = localStorage.getItem('token') || ''
-  const headers = new Headers()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-
-  const response = await fetch('/api/upload/chat/image', {
-    method: 'POST',
-    headers,
-    body: formData,
-  })
-
-  if (!response.ok) {
-    throw new Error('上传失败')
-  }
-
-  const data = await response.json()
-  return normalizeResourceUrl(data.url as string)
+  return uploadResource('/api/upload/chat/image', file)
 }
 
 export async function uploadChatFile(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const token = localStorage.getItem('token') || ''
-  const headers = new Headers()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-
-  const response = await fetch('/api/upload/chat/file', {
-    method: 'POST',
-    headers,
-    body: formData,
-  })
-
-  if (!response.ok) {
-    throw new Error('上传失败')
-  }
-  const data = await response.json()
-  return normalizeResourceUrl(data.url as string)
+  return uploadResource('/api/upload/chat/file', file)
 }
 
 export async function uploadChatAudio(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const token = localStorage.getItem('token') || ''
-  const headers = new Headers()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-
-  const response = await fetch('/api/upload/chat/audio', {
-    method: 'POST',
-    headers,
-    body: formData,
-  })
-
-  if (!response.ok) {
-    throw new Error('上传失败')
-  }
-  const data = await response.json()
-  return normalizeResourceUrl(data.url as string)
+  return uploadResource('/api/upload/chat/audio', file)
 }
 
 export async function uploadGroupAvatar(file: File) {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const token = localStorage.getItem('token') || ''
-  const headers = new Headers()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
-
-  const response = await fetch('/api/upload/group/avatar', {
-    method: 'POST',
-    headers,
-    body: formData,
-  })
-
-  if (!response.ok) {
-    throw new Error('上传失败')
-  }
-  const data = await response.json()
-  return normalizeResourceUrl(data.url as string)
+  return uploadResource('/api/upload/group/avatar', file)
 }
 
 export async function getGroupProfile(groupId: number) {

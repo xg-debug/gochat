@@ -10,9 +10,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 
 	"gochat/internal/model"
-	"gochat/internal/pkg/db"
 )
 
 const (
@@ -28,15 +28,19 @@ const (
 	GroupAvatarMaxSize = 5 * 1024 * 1024
 )
 
-type uploadService struct{}
+type UploadService struct {
+	db *gorm.DB
+}
 
-var UploadService = &uploadService{}
+func NewUploadService(db *gorm.DB) *UploadService {
+	return &UploadService{db: db}
+}
 
-func (s *uploadService) UploadAvatar(c *gin.Context) (string, error) {
+func (s *UploadService) UploadAvatar(c *gin.Context) (string, error) {
 	return saveUploaded(c, "file", AvatarUploadPath, MaxUploadSize, []string{".jpg", ".jpeg", ".png", ".gif"}, "/uploads/avatars", false)
 }
 
-func (s *uploadService) UploadChatImage(c *gin.Context, userID int64) (string, error) {
+func (s *UploadService) UploadChatImage(c *gin.Context, userID int64) (string, error) {
 	url, err := saveUploaded(c, "file", ChatImagePath, ChatImageMaxSize, []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}, "/uploads/chat", false)
 	if err != nil {
 		return "", err
@@ -45,7 +49,7 @@ func (s *uploadService) UploadChatImage(c *gin.Context, userID int64) (string, e
 	return url, nil
 }
 
-func (s *uploadService) UploadChatFile(c *gin.Context, userID int64) (string, error) {
+func (s *UploadService) UploadChatFile(c *gin.Context, userID int64) (string, error) {
 	url, err := saveUploaded(c, "file", ChatFilePath, ChatFileMaxSize, nil, "/uploads/files", true)
 	if err != nil {
 		return "", err
@@ -54,7 +58,7 @@ func (s *uploadService) UploadChatFile(c *gin.Context, userID int64) (string, er
 	return url, nil
 }
 
-func (s *uploadService) UploadChatAudio(c *gin.Context, userID int64) (string, error) {
+func (s *UploadService) UploadChatAudio(c *gin.Context, userID int64) (string, error) {
 	url, err := saveUploaded(c, "file", ChatAudioPath, ChatAudioMaxSize, []string{".mp3", ".wav", ".ogg", ".m4a", ".webm"}, "/uploads/audio", false)
 	if err != nil {
 		return "", err
@@ -63,23 +67,19 @@ func (s *uploadService) UploadChatAudio(c *gin.Context, userID int64) (string, e
 	return url, nil
 }
 
-func (s *uploadService) UploadGroupAvatar(c *gin.Context) (string, error) {
+func (s *UploadService) UploadGroupAvatar(c *gin.Context) (string, error) {
 	return saveUploaded(c, "file", GroupAvatarPath, GroupAvatarMaxSize, []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}, "/uploads/groups", false)
 }
 
-func (s *uploadService) saveFileRecord(userID int64, c *gin.Context, url, fileType string) {
-	if userID <= 0 {
-		return
-	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
+func (s *UploadService) saveFileRecord(userID int64, c *gin.Context, url, fileType string) {
+	if userID <= 0 || s.db == nil {
 		return
 	}
 	file, err := c.FormFile("file")
 	if err != nil {
 		return
 	}
-	_ = dbConn.Create(&model.File{UserID: userID, FileName: file.Filename, FileURL: url, FileSize: file.Size, FileType: fileType, CreatedAt: time.Now()}).Error
+	_ = s.db.Create(&model.File{UserID: userID, FileName: file.Filename, FileURL: url, FileSize: file.Size, FileType: fileType, CreatedAt: time.Now()}).Error
 }
 
 func saveUploaded(c *gin.Context, field, dstDir string, maxSize int64, exts []string, urlPrefix string, allowAnyExt bool) (string, error) {

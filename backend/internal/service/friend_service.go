@@ -2,31 +2,37 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
 	"gochat/internal/dto/request"
 	"gochat/internal/dto/response"
 	"gochat/internal/model"
-	"gochat/internal/pkg/db"
+
+	"gorm.io/gorm"
 )
 
-type friendService struct{}
+type FriendService struct {
+	db       *gorm.DB
+	isOnline func(userID uint64) bool
+}
 
-var FriendService = &friendService{}
+func NewFriendService(db *gorm.DB, isOnline func(userID uint64) bool) *FriendService {
+	if isOnline == nil {
+		isOnline = func(uint64) bool { return false }
+	}
+	return &FriendService{db: db, isOnline: isOnline}
+}
 
-func (s *friendService) SearchUser(currentUserID int64, query request.SearchUserQuery) ([]response.UserSearchResult, error) {
+func (s *FriendService) SearchUser(currentUserID int64, query request.SearchUserQuery) ([]response.UserSearchResult, error) {
 	keyword := strings.TrimSpace(query.Keyword)
 	if keyword == "" {
 		return nil, errors.New("keyword is required")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return nil, errors.New("db not ready")
-	}
 
 	var users []model.UserAccount
-	if err := dbConn.Where("username LIKE ?", "%"+keyword+"%").Limit(20).Find(&users).Error; err != nil {
+	if err := s.db.Where("username LIKE ?", "%"+keyword+"%").Limit(20).Find(&users).Error; err != nil {
 		return nil, err
 	}
 
@@ -37,16 +43,16 @@ func (s *friendService) SearchUser(currentUserID int64, query request.SearchUser
 		}
 
 		var profile model.UserProfile
-		_ = dbConn.Where("user_id = ?", u.ID).First(&profile).Error
+		_ = s.db.Where("user_id = ?", u.ID).First(&profile).Error
 
 		var count int64
-		dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, u.ID).Count(&count)
+		s.db.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, u.ID).Count(&count)
 
 		pending := false
 		pendingFromMe := false
 		if count == 0 {
 			var pendingReq model.FriendRequest
-			err := dbConn.Where("status = 0 AND ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))", currentUserID, u.ID, u.ID, currentUserID).
+			err := s.db.Where("status = 0 AND ((from_user_id = ? AND to_user_id = ?) OR (from_user_id = ? AND to_user_id = ?))", currentUserID, u.ID, u.ID, currentUserID).
 				First(&pendingReq).Error
 			if err == nil {
 				pending = true
@@ -71,41 +77,33 @@ func (s *friendService) SearchUser(currentUserID int64, query request.SearchUser
 	return results, nil
 }
 
-func (s *friendService) SendFriendRequest(currentUserID int64, req request.SendFriendRequest) error {
+func (s *FriendService) SendFriendRequest(currentUserID int64, req request.SendFriendRequest) error {
 	if currentUserID == req.ToUserID {
 		return errors.New("cannot add yourself")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return errors.New("db not ready")
-	}
 
 	var count int64
-	dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, req.ToUserID).Count(&count)
+	s.db.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, req.ToUserID).Count(&count)
 	if count > 0 {
 		return errors.New("already friends")
 	}
 
 	var existing model.FriendRequest
-	if err := dbConn.Where("from_user_id = ? AND to_user_id = ? AND status = 0", currentUserID, req.ToUserID).First(&existing).Error; err == nil {
+	if err := s.db.Where("from_user_id = ? AND to_user_id = ? AND status = 0", currentUserID, req.ToUserID).First(&existing).Error; err == nil {
 		return nil
 	}
 
 	var reverse model.FriendRequest
-	if err := dbConn.Where("from_user_id = ? AND to_user_id = ? AND status = 0", req.ToUserID, currentUserID).First(&reverse).Error; err == nil {
+	if err := s.db.Where("from_user_id = ? AND to_user_id = ? AND status = 0", req.ToUserID, currentUserID).First(&reverse).Error; err == nil {
 		return errors.New("user already requested you")
 	}
 
-	return dbConn.Create(&model.FriendRequest{FromUserID: currentUserID, ToUserID: req.ToUserID, Status: 0}).Error
+	return s.db.Create(&model.FriendRequest{FromUserID: currentUserID, ToUserID: req.ToUserID, Status: 0}).Error
 }
 
-func (s *friendService) ListFriendRequests(currentUserID int64) ([]response.FriendRequestItem, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return nil, errors.New("db not ready")
-	}
+func (s *FriendService) ListFriendRequests(currentUserID int64) ([]response.FriendRequestItem, error) {
 	var requests []model.FriendRequest
-	if err := dbConn.Where("to_user_id = ? AND status = 0", currentUserID).Find(&requests).Error; err != nil {
+	if err := s.db.Where("to_user_id = ? AND status = 0", currentUserID).Find(&requests).Error; err != nil {
 		return nil, err
 	}
 
@@ -113,8 +111,8 @@ func (s *friendService) ListFriendRequests(currentUserID int64) ([]response.Frie
 	for _, r := range requests {
 		var account model.UserAccount
 		var profile model.UserProfile
-		_ = dbConn.First(&account, r.FromUserID).Error
-		_ = dbConn.Where("user_id = ?", r.FromUserID).First(&profile).Error
+		_ = s.db.First(&account, r.FromUserID).Error
+		_ = s.db.Where("user_id = ?", r.FromUserID).First(&profile).Error
 		nickname := profile.Nickname
 		if nickname == "" {
 			nickname = account.Username
@@ -131,13 +129,9 @@ func (s *friendService) ListFriendRequests(currentUserID int64) ([]response.Frie
 	return result, nil
 }
 
-func (s *friendService) HandleFriendRequest(currentUserID int64, req request.HandleFriendRequest) error {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return errors.New("db not ready")
-	}
+func (s *FriendService) HandleFriendRequest(currentUserID int64, req request.HandleFriendRequest) error {
 	var friendReq model.FriendRequest
-	if err := dbConn.First(&friendReq, req.RequestID).Error; err != nil {
+	if err := s.db.First(&friendReq, req.RequestID).Error; err != nil {
 		return errors.New("request not found")
 	}
 	if friendReq.ToUserID != currentUserID {
@@ -147,7 +141,7 @@ func (s *friendService) HandleFriendRequest(currentUserID int64, req request.Han
 		return errors.New("request already handled")
 	}
 
-	tx := dbConn.Begin()
+	tx := s.db.Begin()
 	status := int8(2)
 	if req.Action == "accept" {
 		status = 1
@@ -171,15 +165,11 @@ func (s *friendService) HandleFriendRequest(currentUserID int64, req request.Han
 	return tx.Commit().Error
 }
 
-func (s *friendService) DeleteFriend(currentUserID int64, friendID int64) error {
+func (s *FriendService) DeleteFriend(currentUserID int64, friendID int64) error {
 	if friendID <= 0 {
 		return errors.New("invalid friend id")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return errors.New("db not ready")
-	}
-	tx := dbConn.Begin()
+	tx := s.db.Begin()
 	if err := tx.Where("(user_id = ? AND friend_id = ?) OR (user_id = ? AND friend_id = ?)", currentUserID, friendID, friendID, currentUserID).Delete(&model.Friend{}).Error; err != nil {
 		tx.Rollback()
 		return err
@@ -187,29 +177,59 @@ func (s *friendService) DeleteFriend(currentUserID int64, friendID int64) error 
 	return tx.Commit().Error
 }
 
-func (s *friendService) BlockFriend(currentUserID int64, friendID int64) error {
+func (s *FriendService) BlockFriend(currentUserID int64, friendID int64) error {
 	if friendID <= 0 {
 		return errors.New("invalid friend id")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return errors.New("db not ready")
-	}
-	return dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, friendID).Update("status", 0).Error
+	return s.db.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, friendID).Update("status", 0).Error
 }
 
-func (s *friendService) UnblockFriend(currentUserID int64, friendID int64) error {
+func (s *FriendService) UnblockFriend(currentUserID int64, friendID int64) error {
 	if friendID <= 0 {
 		return errors.New("invalid friend id")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return errors.New("db not ready")
-	}
-	return dbConn.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, friendID).Update("status", 1).Error
+	return s.db.Model(&model.Friend{}).Where("user_id = ? AND friend_id = ?", currentUserID, friendID).Update("status", 1).Error
 }
 
-func (s *friendService) GetContacts(currentUserID int64) ([]response.ContactResponse, error) {
-	// 统一复用 user service 的 contacts 逻辑
-	return UserService.GetContacts(currentUserID)
+func (s *FriendService) GetContacts(currentUserID int64) ([]response.ContactResponse, error) {
+	var friends []model.Friend
+	if err := s.db.Where("user_id = ? AND status = 1", currentUserID).Find(&friends).Error; err != nil {
+		return nil, err
+	}
+	if len(friends) == 0 {
+		return []response.ContactResponse{}, nil
+	}
+
+	friendIDs := make([]int64, 0, len(friends))
+	for _, f := range friends {
+		friendIDs = append(friendIDs, f.FriendID)
+	}
+
+	var accounts []model.UserAccount
+	if err := s.db.Where("id in ?", friendIDs).Find(&accounts).Error; err != nil {
+		return nil, err
+	}
+
+	var profiles []model.UserProfile
+	_ = s.db.Where("user_id in ?", friendIDs).Find(&profiles).Error
+	profileMap := make(map[int64]model.UserProfile, len(profiles))
+	for _, p := range profiles {
+		profileMap[p.UserID] = p
+	}
+
+	result := make([]response.ContactResponse, 0, len(accounts))
+	for _, account := range accounts {
+		profile := profileMap[account.ID]
+		name := strings.TrimSpace(profile.Nickname)
+		if name == "" {
+			name = account.Username
+		}
+		result = append(result, response.ContactResponse{
+			ID:     fmt.Sprintf("u_%d", account.ID),
+			Name:   name,
+			Avatar: profile.Avatar,
+			Online: s.isOnline(uint64(account.ID)),
+		})
+	}
+	return result, nil
 }

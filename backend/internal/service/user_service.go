@@ -10,28 +10,30 @@ import (
 	"gochat/internal/dto/response"
 	"gochat/internal/model"
 	"gochat/internal/pkg/auth"
-	"gochat/internal/pkg/db"
-	"gochat/internal/ws"
 
 	"gorm.io/gorm"
 )
 
-type userService struct{}
+type UserService struct {
+	db       *gorm.DB
+	isOnline func(userID uint64) bool
+}
 
-var UserService = &userService{}
+func NewUserService(db *gorm.DB, isOnline func(userID uint64) bool) *UserService {
+	if isOnline == nil {
+		isOnline = func(uint64) bool { return false }
+	}
+	return &UserService{db: db, isOnline: isOnline}
+}
 
-func (s *userService) Login(req request.LoginRequest) (string, response.UserResponse, error) {
+func (s *UserService) Login(req request.LoginRequest) (string, response.UserResponse, error) {
 	req.Username = strings.TrimSpace(req.Username)
 	if req.Username == "" || req.Password == "" {
 		return "", response.UserResponse{}, errors.New("username or password missing")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return "", response.UserResponse{}, errors.New("db not ready")
-	}
 
 	var account model.UserAccount
-	if err := dbConn.Where("username = ?", req.Username).First(&account).Error; err != nil {
+	if err := s.db.Where("username = ?", req.Username).First(&account).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return "", response.UserResponse{}, errors.New("invalid credentials")
 		}
@@ -54,19 +56,15 @@ func (s *userService) Login(req request.LoginRequest) (string, response.UserResp
 	return token, userResp, nil
 }
 
-func (s *userService) Register(req request.RegisterRequest) (string, response.UserResponse, error) {
+func (s *UserService) Register(req request.RegisterRequest) (string, response.UserResponse, error) {
 	req.Username = strings.TrimSpace(req.Username)
 	req.Nickname = strings.TrimSpace(req.Nickname)
 	if req.Username == "" || req.Password == "" {
 		return "", response.UserResponse{}, errors.New("username or password missing")
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return "", response.UserResponse{}, errors.New("db not ready")
-	}
 
 	var existing model.UserAccount
-	if err := dbConn.Where("username = ?", req.Username).First(&existing).Error; err == nil {
+	if err := s.db.Where("username = ?", req.Username).First(&existing).Error; err == nil {
 		return "", response.UserResponse{}, errors.New("username already exists")
 	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", response.UserResponse{}, err
@@ -82,7 +80,7 @@ func (s *userService) Register(req request.RegisterRequest) (string, response.Us
 		profile.Nickname = req.Username
 	}
 
-	tx := dbConn.Begin()
+	tx := s.db.Begin()
 	if err := tx.Create(&account).Error; err != nil {
 		tx.Rollback()
 		return "", response.UserResponse{}, err
@@ -103,13 +101,9 @@ func (s *userService) Register(req request.RegisterRequest) (string, response.Us
 	return token, buildUserResponse(account, profile), nil
 }
 
-func (s *userService) Profile(userID int64) (response.UserResponse, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return response.UserResponse{}, errors.New("db not ready")
-	}
+func (s *UserService) Profile(userID int64) (response.UserResponse, error) {
 	var account model.UserAccount
-	if err := dbConn.Where("id = ?", userID).First(&account).Error; err != nil {
+	if err := s.db.Where("id = ?", userID).First(&account).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return response.UserResponse{}, errors.New("user not found")
 		}
@@ -122,17 +116,12 @@ func (s *userService) Profile(userID int64) (response.UserResponse, error) {
 	return buildUserResponse(account, profile), nil
 }
 
-func (s *userService) UpdateProfile(userID int64, req request.UpdateProfileRequest) (response.UserResponse, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return response.UserResponse{}, errors.New("db not ready")
-	}
-
+func (s *UserService) UpdateProfile(userID int64, req request.UpdateProfileRequest) (response.UserResponse, error) {
 	var profile model.UserProfile
-	if err := dbConn.Where("user_id = ?", userID).First(&profile).Error; err != nil {
+	if err := s.db.Where("user_id = ?", userID).First(&profile).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			profile = model.UserProfile{UserID: userID}
-			if err := dbConn.Create(&profile).Error; err != nil {
+			if err := s.db.Create(&profile).Error; err != nil {
 				return response.UserResponse{}, err
 			}
 		} else {
@@ -173,7 +162,7 @@ func (s *userService) UpdateProfile(userID int64, req request.UpdateProfileReque
 	}
 
 	if len(updates) > 0 {
-		if err := dbConn.Model(&model.UserProfile{}).Where("user_id = ?", userID).Updates(updates).Error; err != nil {
+		if err := s.db.Model(&model.UserProfile{}).Where("user_id = ?", userID).Updates(updates).Error; err != nil {
 			return response.UserResponse{}, err
 		}
 	}
@@ -181,13 +170,9 @@ func (s *userService) UpdateProfile(userID int64, req request.UpdateProfileReque
 	return s.Profile(userID)
 }
 
-func (s *userService) GetContacts(userID int64) ([]response.ContactResponse, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return nil, errors.New("db not ready")
-	}
+func (s *UserService) GetContacts(userID int64) ([]response.ContactResponse, error) {
 	var accounts []model.UserAccount
-	if err := dbConn.Where("id <> ?", userID).Order("id asc").Find(&accounts).Error; err != nil {
+	if err := s.db.Where("id <> ?", userID).Order("id asc").Find(&accounts).Error; err != nil {
 		return nil, err
 	}
 
@@ -198,7 +183,7 @@ func (s *userService) GetContacts(userID int64) ([]response.ContactResponse, err
 	profileMap := map[int64]model.UserProfile{}
 	if len(ids) > 0 {
 		var profiles []model.UserProfile
-		if err := dbConn.Where("user_id in ?", ids).Find(&profiles).Error; err == nil {
+		if err := s.db.Where("user_id in ?", ids).Find(&profiles).Error; err == nil {
 			for _, p := range profiles {
 				profileMap[p.UserID] = p
 			}
@@ -216,20 +201,15 @@ func (s *userService) GetContacts(userID int64) ([]response.ContactResponse, err
 			ID:     fmt.Sprintf("u_%d", account.ID),
 			Name:   name,
 			Avatar: profile.Avatar,
-			Online: ws.IsOnline(uint64(account.ID)),
+			Online: s.isOnline(uint64(account.ID)),
 		})
 	}
 	return result, nil
 }
 
-func (s *userService) GetConversations(userID int64) ([]response.ConversationResponse, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return nil, errors.New("db not ready")
-	}
-
+func (s *UserService) GetConversations(userID int64) ([]response.ConversationResponse, error) {
 	var friends []model.Friend
-	if err := dbConn.Where("user_id = ? AND status = 1", userID).Find(&friends).Error; err != nil {
+	if err := s.db.Where("user_id = ? AND status = 1", userID).Find(&friends).Error; err != nil {
 		return nil, err
 	}
 	ids := make([]int64, 0, len(friends))
@@ -239,7 +219,7 @@ func (s *userService) GetConversations(userID int64) ([]response.ConversationRes
 
 	var accounts []model.UserAccount
 	if len(ids) > 0 {
-		if err := dbConn.Where("id in ?", ids).Order("id asc").Find(&accounts).Error; err != nil {
+		if err := s.db.Where("id in ?", ids).Order("id asc").Find(&accounts).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -247,7 +227,7 @@ func (s *userService) GetConversations(userID int64) ([]response.ConversationRes
 	profileMap := map[int64]model.UserProfile{}
 	if len(ids) > 0 {
 		var profiles []model.UserProfile
-		if err := dbConn.Where("user_id in ?", ids).Find(&profiles).Error; err == nil {
+		if err := s.db.Where("user_id in ?", ids).Find(&profiles).Error; err == nil {
 			for _, p := range profiles {
 				profileMap[p.UserID] = p
 			}
@@ -268,18 +248,18 @@ func (s *userService) GetConversations(userID int64) ([]response.ConversationRes
 			Avatar:      profile.Avatar,
 			LastMessage: lastMessage,
 			Unread:      s.countUnreadSingle(userID, int64(account.ID)),
-			Online:      ws.IsOnline(uint64(account.ID)),
+			Online:      s.isOnline(uint64(account.ID)),
 		})
 	}
 
 	var members []model.GroupMember
-	if err := dbConn.Where("user_id = ?", userID).Find(&members).Error; err == nil && len(members) > 0 {
+	if err := s.db.Where("user_id = ?", userID).Find(&members).Error; err == nil && len(members) > 0 {
 		groupIDs := make([]int64, 0, len(members))
 		for _, m := range members {
 			groupIDs = append(groupIDs, m.GroupID)
 		}
 		var groups []model.ChatGroup
-		if err := dbConn.Where("id in ?", groupIDs).Find(&groups).Error; err == nil {
+		if err := s.db.Where("id in ?", groupIDs).Find(&groups).Error; err == nil {
 			for _, g := range groups {
 				result = append(result, response.ConversationResponse{
 					ID:          fmt.Sprintf("g_%d", g.ID),
@@ -295,7 +275,7 @@ func (s *userService) GetConversations(userID int64) ([]response.ConversationRes
 	return result, nil
 }
 
-func (s *userService) SearchConversations(userID int64, keyword string) ([]response.ConversationResponse, error) {
+func (s *UserService) SearchConversations(userID int64, keyword string) ([]response.ConversationResponse, error) {
 	keyword = strings.TrimSpace(keyword)
 	if keyword == "" {
 		return s.GetConversations(userID)
@@ -314,11 +294,7 @@ func (s *userService) SearchConversations(userID int64, keyword string) ([]respo
 	return result, nil
 }
 
-func (s *userService) GetMessages(userID int64, conversationID string) ([]response.MessageResponse, error) {
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return nil, errors.New("db not ready")
-	}
+func (s *UserService) GetMessages(userID int64, conversationID string) ([]response.MessageResponse, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return nil, errors.New("conversationId required")
@@ -331,11 +307,11 @@ func (s *userService) GetMessages(userID int64, conversationID string) ([]respon
 			return nil, errors.New("invalid conversationId")
 		}
 		var count int64
-		dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", groupID, userID).Count(&count)
+		s.db.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", groupID, userID).Count(&count)
 		if count == 0 {
 			return nil, errors.New("not in group")
 		}
-		if err := dbConn.Where("chat_type = ? AND to_id = ?", 2, groupID).Order("created_at asc").Find(&messages).Error; err != nil {
+		if err := s.db.Where("chat_type = ? AND to_id = ?", 2, groupID).Order("created_at asc").Find(&messages).Error; err != nil {
 			return nil, err
 		}
 	} else {
@@ -343,7 +319,7 @@ func (s *userService) GetMessages(userID int64, conversationID string) ([]respon
 		if err != nil || peerID <= 0 {
 			return nil, errors.New("invalid conversationId")
 		}
-		if err := dbConn.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
+		if err := s.db.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
 			Order("created_at asc").Find(&messages).Error; err != nil {
 			return nil, err
 		}
@@ -373,10 +349,9 @@ func (s *userService) GetMessages(userID int64, conversationID string) ([]respon
 	return result, nil
 }
 
-func (s *userService) loadOrEmptyProfile(userID int64) (model.UserProfile, error) {
-	dbConn := db.GetDB()
+func (s *UserService) loadOrEmptyProfile(userID int64) (model.UserProfile, error) {
 	var profile model.UserProfile
-	if err := dbConn.Where("user_id = ?", userID).First(&profile).Error; err != nil {
+	if err := s.db.Where("user_id = ?", userID).First(&profile).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return model.UserProfile{}, nil
 		}
@@ -449,10 +424,9 @@ func mapMsgPreview(msg model.Message) string {
 	}
 }
 
-func (s *userService) latestSingleMessageText(userID, peerID int64) string {
-	dbConn := db.GetDB()
+func (s *UserService) latestSingleMessageText(userID, peerID int64) string {
 	var msg model.Message
-	err := dbConn.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
+	err := s.db.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
 		Order("created_at desc").Limit(1).Find(&msg).Error
 	if err != nil || msg.ID == 0 {
 		return ""
@@ -460,32 +434,29 @@ func (s *userService) latestSingleMessageText(userID, peerID int64) string {
 	return mapMsgPreview(msg)
 }
 
-func (s *userService) latestGroupMessageText(groupID int64) string {
-	dbConn := db.GetDB()
+func (s *UserService) latestGroupMessageText(groupID int64) string {
 	var msg model.Message
-	err := dbConn.Where("chat_type = ? AND to_id = ?", 2, groupID).Order("created_at desc").Limit(1).Find(&msg).Error
+	err := s.db.Where("chat_type = ? AND to_id = ?", 2, groupID).Order("created_at desc").Limit(1).Find(&msg).Error
 	if err != nil || msg.ID == 0 {
 		return ""
 	}
 	return mapMsgPreview(msg)
 }
 
-func (s *userService) countUnreadSingle(userID, peerID int64) int {
-	dbConn := db.GetDB()
+func (s *UserService) countUnreadSingle(userID, peerID int64) int {
 	var count int64
-	dbConn.Model(&model.Message{}).
+	s.db.Model(&model.Message{}).
 		Where("from_id = ? AND to_id = ? AND status = 0", peerID, userID).
 		Count(&count)
 	return int(count)
 }
 
-func (s *userService) countUnreadGroup(userID, groupID int64) int {
+func (s *UserService) countUnreadGroup(userID, groupID int64) int {
 	// 当前模型没有每用户群消息游标，先与现有逻辑保持一致返回0。
 	return 0
 }
 
-func (s *userService) buildAvatarMap(messages []model.Message) map[int64]string {
-	dbConn := db.GetDB()
+func (s *UserService) buildAvatarMap(messages []model.Message) map[int64]string {
 	avatarMap := map[int64]string{}
 	if len(messages) == 0 {
 		return avatarMap
@@ -500,7 +471,7 @@ func (s *userService) buildAvatarMap(messages []model.Message) map[int64]string 
 		fromIDs = append(fromIDs, message.FromID)
 	}
 	var profiles []model.UserProfile
-	if err := dbConn.Where("user_id in ?", fromIDs).Find(&profiles).Error; err == nil {
+	if err := s.db.Where("user_id in ?", fromIDs).Find(&profiles).Error; err == nil {
 		for _, p := range profiles {
 			avatarMap[p.UserID] = p.Avatar
 		}

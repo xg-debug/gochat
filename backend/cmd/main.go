@@ -9,6 +9,7 @@ import (
 	"gochat/internal/pkg/auth"
 	"gochat/internal/pkg/db"
 	zlog "gochat/internal/pkg/zlog"
+	"gochat/internal/service"
 	"gochat/internal/ws"
 
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,12 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
+	userSvc := service.NewUserService(dbConn, ws.IsOnline)
+	friendSvc := service.NewFriendService(dbConn, ws.IsOnline)
+	groupSvc := service.NewGroupService(dbConn)
+	uploadSvc := service.NewUploadService(dbConn)
+	h := handler.NewApp(userSvc, friendSvc, groupSvc, uploadSvc)
+
 	r := gin.Default()
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
@@ -52,47 +59,47 @@ func main() {
 	r.Static("/uploads/groups", "./uploads/groups")
 
 	api := r.Group("/api")
-	api.POST("/login", handler.Login)
-	api.POST("/register", handler.Register)
+	api.POST("/login", h.Login)
+	api.POST("/register", h.Register)
 
 	authorized := api.Group("/")
 	authorized.Use(auth.AuthMiddleware())
 	{
-		authorized.POST("/logout", handler.Logout)
-		authorized.GET("/profile", handler.Profile)
-		authorized.PUT("/profile", handler.UpdateProfile)       // 更新个人信息
-		authorized.POST("/upload/avatar", handler.UploadAvatar) // 头像上传
-		authorized.POST("/upload/chat/image", handler.UploadChatImage)
-		authorized.POST("/upload/chat/file", handler.UploadChatFile)
-		authorized.POST("/upload/chat/audio", handler.UploadChatAudio)
-		authorized.POST("/upload/group/avatar", handler.UploadGroupAvatar)
+		authorized.POST("/logout", h.Logout)
+		authorized.GET("/profile", h.Profile)
+		authorized.PUT("/profile", h.UpdateProfile) // 更新个人信息
+		authorized.POST("/upload/avatar", h.UploadAvatar)
+		authorized.POST("/upload/chat/image", h.UploadChatImage)
+		authorized.POST("/upload/chat/file", h.UploadChatFile)
+		authorized.POST("/upload/chat/audio", h.UploadChatAudio)
+		authorized.POST("/upload/group/avatar", h.UploadGroupAvatar)
 
 		// 好友相关接口
-		authorized.GET("/user/search", handler.SearchUser)
-		authorized.POST("/friend/request", handler.SendFriendRequest)
-		authorized.GET("/friend/requests", handler.ListFriendRequests)
-		authorized.POST("/friend/handle", handler.HandleFriendRequest)
-		authorized.POST("/friend/delete", handler.DeleteFriend)
-		authorized.POST("/friend/block", handler.BlockFriend)
-		authorized.POST("/friend/unblock", handler.UnblockFriend)
-		authorized.GET("/contacts", handler.GetContacts) // 使用新的 GetContacts 实现
+		authorized.GET("/user/search", h.SearchUser)
+		authorized.POST("/friend/request", h.SendFriendRequest)
+		authorized.GET("/friend/requests", h.ListFriendRequests)
+		authorized.POST("/friend/handle", h.HandleFriendRequest)
+		authorized.POST("/friend/delete", h.DeleteFriend)
+		authorized.POST("/friend/block", h.BlockFriend)
+		authorized.POST("/friend/unblock", h.UnblockFriend)
+		authorized.GET("/contacts", h.GetContacts)
 
-		authorized.GET("/conversations", handler.Conversations)
-		authorized.GET("/conversations/search", handler.SearchConversations)
-		authorized.GET("/messages", handler.Messages)
+		authorized.GET("/conversations", h.Conversations)
+		authorized.GET("/conversations/search", h.SearchConversations)
+		authorized.GET("/messages", h.Messages)
 
 		// 群聊相关
-		authorized.POST("/group/create", handler.CreateGroup)
-		authorized.GET("/group/search", handler.SearchGroup)
-		authorized.POST("/group/join", handler.JoinGroup)
-		authorized.GET("/groups", handler.ListGroups)
-		authorized.GET("/group/profile", handler.GetGroupProfile)
-		authorized.PUT("/group/profile", handler.UpdateGroupProfile)
-		authorized.GET("/group/members", handler.ListGroupMembers)
-		authorized.POST("/group/kick", handler.KickGroupMember)
-		authorized.POST("/group/admin", handler.SetGroupAdmin)
-		authorized.GET("/group/inviteable", handler.ListInviteableFriends)
-		authorized.POST("/group/invite", handler.InviteGroupMember)
+		authorized.POST("/group/create", h.CreateGroup)
+		authorized.GET("/group/search", h.SearchGroup)
+		authorized.POST("/group/join", h.JoinGroup)
+		authorized.GET("/groups", h.ListGroups)
+		authorized.GET("/group/profile", h.GetGroupProfile)
+		authorized.PUT("/group/profile", h.UpdateGroupProfile)
+		authorized.GET("/group/members", h.ListGroupMembers)
+		authorized.POST("/group/kick", h.KickGroupMember)
+		authorized.POST("/group/admin", h.SetGroupAdmin)
+		authorized.GET("/group/inviteable", h.ListInviteableFriends)
+		authorized.POST("/group/invite", h.InviteGroupMember)
 	}
 
 	r.GET("/ws", auth.AuthMiddleware(), handler.WSHandler(hub, zlog.GetLogger()))

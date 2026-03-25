@@ -3,6 +3,7 @@ import { onBeforeUnmount, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useChatStore } from '../stores/chat'
 import { uploadChatImage, uploadChatFile, uploadChatAudio } from '../services/api'
+import { parseConversationId } from '../utils/chat'
 
 const chat = useChatStore()
 const content = ref('')
@@ -17,11 +18,14 @@ let mediaRecorder: MediaRecorder | null = null
 let recordChunks: Blob[] = []
 const emojiList = ['😀', '😁', '😂', '🤣', '😊', '😍', '😘', '🤔', '😎', '😭', '👍', '👋', '🎉', '❤️', '🔥', '👏']
 
+function resolveToID() {
+  const parsed = parseConversationId(chat.activeConversationId)
+  return parsed.id
+}
+
 function send() {
   if (!content.value.trim()) return
-  const conversationId = chat.activeConversationId
-  if (!conversationId) return
-  const toId = Number(conversationId.replace(/^[ug]_/, ''))
+  const toId = resolveToID()
   if (!toId) return
   chat.sendMessage(toId, content.value, 'text')
   content.value = ''
@@ -65,9 +69,7 @@ async function onImageChange(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files || !input.files[0]) return
   const file = input.files[0]
-  const conversationId = chat.activeConversationId
-  if (!conversationId) return
-  const toId = Number(conversationId.replace(/^[ug]_/, ''))
+  const toId = resolveToID()
   if (!toId) return
 
   try {
@@ -85,9 +87,7 @@ async function onFileChange(event: Event) {
   const input = event.target as HTMLInputElement
   if (!input.files || !input.files[0]) return
   const file = input.files[0]
-  const conversationId = chat.activeConversationId
-  if (!conversationId) return
-  const toId = Number(conversationId.replace(/^[ug]_/, ''))
+  const toId = resolveToID()
   if (!toId) return
 
   try {
@@ -140,9 +140,7 @@ async function startRecording() {
       const ext = mime.includes('mp4') ? 'm4a' : 'webm'
       const file = new File([blob], `audio_${Date.now()}.${ext}`, { type: mime })
       const duration = Math.max(1, Math.round((Date.now() - recordStartAt.value) / 1000))
-      const conversationId = chat.activeConversationId
-      if (!conversationId) return
-      const toId = Number(conversationId.replace(/^[ug]_/, ''))
+      const toId = resolveToID()
       if (!toId) return
       try {
         const url = await uploadChatAudio(file)
@@ -177,9 +175,7 @@ async function onPaste(event: ClipboardEvent) {
     if (item.type.startsWith('image/')) {
       const file = item.getAsFile()
       if (!file) continue
-      const conversationId = chat.activeConversationId
-      if (!conversationId) return
-      const toId = Number(conversationId.replace(/^[ug]_/, ''))
+      const toId = resolveToID()
       if (!toId) return
       try {
         const url = await uploadChatImage(file)

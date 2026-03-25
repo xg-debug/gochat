@@ -6,18 +6,17 @@ import (
 
 	"gochat/internal/dto/request"
 	"gochat/internal/pkg/auth"
-	"gochat/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
 
-func Login(c *gin.Context) {
+func (h *App) Login(c *gin.Context) {
 	var req request.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	token, user, err := service.UserService.Login(req)
+	token, user, err := h.User.Login(req)
 	if err != nil {
 		c.JSON(401, gin.H{"error": err.Error()})
 		return
@@ -25,13 +24,13 @@ func Login(c *gin.Context) {
 	c.JSON(200, gin.H{"token": token, "user": user})
 }
 
-func Register(c *gin.Context) {
+func (h *App) Register(c *gin.Context) {
 	var req request.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	token, user, err := service.UserService.Register(req)
+	token, user, err := h.User.Register(req)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -39,9 +38,8 @@ func Register(c *gin.Context) {
 	c.JSON(200, gin.H{"token": token, "user": user})
 }
 
-func Profile(c *gin.Context) {
-	userID := c.GetInt64("userID")
-	profile, err := service.UserService.Profile(userID)
+func (h *App) Profile(c *gin.Context) {
+	profile, err := h.User.Profile(currentUserID(c))
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
@@ -49,14 +47,13 @@ func Profile(c *gin.Context) {
 	c.JSON(200, profile)
 }
 
-func UpdateProfile(c *gin.Context) {
+func (h *App) UpdateProfile(c *gin.Context) {
 	var req request.UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetInt64("userID")
-	profile, err := service.UserService.UpdateProfile(userID, req)
+	profile, err := h.User.UpdateProfile(currentUserID(c), req)
 	if err != nil {
 		if strings.Contains(err.Error(), "birthday") {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -68,9 +65,8 @@ func UpdateProfile(c *gin.Context) {
 	c.JSON(200, profile)
 }
 
-func Conversations(c *gin.Context) {
-	userID := c.GetInt64("userID")
-	result, err := service.UserService.GetConversations(userID)
+func (h *App) Conversations(c *gin.Context) {
+	result, err := h.User.GetConversations(currentUserID(c))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -78,14 +74,13 @@ func Conversations(c *gin.Context) {
 	c.JSON(200, result)
 }
 
-func SearchConversations(c *gin.Context) {
+func (h *App) SearchConversations(c *gin.Context) {
 	var req request.SearchConversationsQuery
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	userID := c.GetInt64("userID")
-	result, err := service.UserService.SearchConversations(userID, req.Keyword)
+	result, err := h.User.SearchConversations(currentUserID(c), req.Keyword)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -93,14 +88,13 @@ func SearchConversations(c *gin.Context) {
 	c.JSON(200, result)
 }
 
-func Messages(c *gin.Context) {
+func (h *App) Messages(c *gin.Context) {
 	var req request.MessagesQuery
 	if err := c.ShouldBindQuery(&req); err != nil {
 		c.JSON(400, gin.H{"error": "conversationId required"})
 		return
 	}
-	userID := c.GetInt64("userID")
-	result, err := service.UserService.GetMessages(userID, req.ConversationID)
+	result, err := h.User.GetMessages(currentUserID(c), req.ConversationID)
 	if err != nil {
 		switch {
 		case strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "invalid"):
@@ -115,7 +109,7 @@ func Messages(c *gin.Context) {
 	c.JSON(200, result)
 }
 
-func Logout(c *gin.Context) {
+func (h *App) Logout(c *gin.Context) {
 	token := auth.ExtractToken(c)
 	if token == "" {
 		c.JSON(400, gin.H{"error": "missing token"})

@@ -8,7 +8,6 @@ const emit = defineEmits<{
   (event: 'open-group'): void
   (event: 'delete-friend', id: string): void
   (event: 'block-friend', id: string): void
-  (event: 'unblock-friend', id: string): void
 }>()
 </script>
 
