@@ -98,7 +98,13 @@ func (s *FriendService) SendFriendRequest(currentUserID int64, req request.SendF
 		return errors.New("user already requested you")
 	}
 
-	return s.db.Create(&model.FriendRequest{FromUserID: currentUserID, ToUserID: req.ToUserID, Status: 0}).Error
+	if err := s.db.Create(&model.FriendRequest{FromUserID: currentUserID, ToUserID: req.ToUserID, Status: 0}).Error; err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "duplicate") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *FriendService) ListFriendRequests(currentUserID int64) ([]response.FriendRequestItem, error) {

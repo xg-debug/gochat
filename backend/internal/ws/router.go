@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"gochat/internal/model"
-	"gochat/internal/pkg/db"
 )
 
 // 分发逻辑
@@ -37,14 +36,18 @@ var (
 func RouteMessage(hub *Hub, msg *WSMessage) {
 	switch msg.Type {
 	case "single":
-		msg.Payload = enrichPayloadWithSender(msg.FromID, msg.Payload)
+		if !canSendSingle(hub, msg.FromID, msg.ToID) {
+			sendAckError(hub, msg, "forbidden")
+			return
+		}
+		msg.Payload = enrichPayloadWithSender(hub, msg.FromID, msg.Payload)
 		if client := hub.getClient(msg.ToID); client != nil {
 			data, _ := json.Marshal(msg)
 			client.Send <- data
 		}
 		saveMessageAndAck(hub, msg, 1)
 	case "group":
-		msg.Payload = enrichPayloadWithSender(msg.FromID, msg.Payload)
+		msg.Payload = enrichPayloadWithSender(hub, msg.FromID, msg.Payload)
 		if sendGroupMessage(hub, msg) {
 			saveMessageAndAck(hub, msg, 2)
 		}
@@ -68,6 +71,42 @@ func RouteMessage(hub *Hub, msg *WSMessage) {
 		handleRevoke(hub, msg)
 	default:
 		// logger.Info("unknown message type: %s", msg.Type)
+	}
+}
+
+func canSendSingle(hub *Hub, fromID, toID uint64) bool {
+	if hub == nil || hub.db == nil || fromID == 0 || toID == 0 || fromID == toID {
+		return false
+	}
+	var outbound model.Friend
+	if err := hub.db.Where("user_id = ? AND friend_id = ?", int64(fromID), int64(toID)).First(&outbound).Error; err != nil {
+		return false
+	}
+	var inbound model.Friend
+	if err := hub.db.Where("user_id = ? AND friend_id = ?", int64(toID), int64(fromID)).First(&inbound).Error; err != nil {
+		return false
+	}
+	return outbound.Status == 1 && inbound.Status == 1
+}
+
+func sendAckError(hub *Hub, msg *WSMessage, reason string) {
+	if hub == nil || msg == nil || msg.FromID == 0 {
+		return
+	}
+	tempID := ""
+	var payload chatPayload
+	if err := json.Unmarshal(msg.Payload, &payload); err == nil {
+		tempID = strings.TrimSpace(payload.TempID)
+	}
+	ackPayload, _ := json.Marshal(map[string]interface{}{
+		"tempId": tempID,
+		"error":  reason,
+	})
+	ackMsg := WSMessage{Type: "ack", FromID: msg.FromID, ToID: msg.ToID, Payload: ackPayload}
+	if raw, err := json.Marshal(ackMsg); err == nil {
+		if client := hub.getClient(msg.FromID); client != nil {
+			client.Send <- raw
+		}
 	}
 }
 
@@ -189,20 +228,11 @@ func sendGroupCallStateToUser(hub *Hub, userID, groupID uint64) {
 		extra["participants"] = participants
 		fromID = session.HostID
 	}
-	payloadRaw, err := json.Marshal(chatPayload{
-		Content:     "",
-		ContentType: "text",
-		Extra:       extra,
-	})
+	payloadRaw, err := json.Marshal(chatPayload{Content: "", ContentType: "text", Extra: extra})
 	if err != nil {
 		return
 	}
-	resp := WSMessage{
-		Type:    "call",
-		FromID:  fromID,
-		ToID:    groupID,
-		Payload: payloadRaw,
-	}
+	resp := WSMessage{Type: "call", FromID: fromID, ToID: groupID, Payload: payloadRaw}
 	if raw, err := json.Marshal(resp); err == nil {
 		if client := hub.getClient(userID); client != nil {
 			client.Send <- raw
@@ -211,7 +241,7 @@ func sendGroupCallStateToUser(hub *Hub, userID, groupID uint64) {
 }
 
 func sendGroupCallSignal(hub *Hub, msg *WSMessage) bool {
-	if msg == nil || msg.ToID == 0 || msg.FromID == 0 {
+	if msg == nil || msg.ToID == 0 || msg.FromID == 0 || hub == nil || hub.db == nil {
 		return false
 	}
 	var payload chatPayload
@@ -219,12 +249,8 @@ func sendGroupCallSignal(hub *Hub, msg *WSMessage) bool {
 		return false
 	}
 	action, callType := parseGroupCallAction(payload)
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return false
-	}
 	var memberCount int64
-	dbConn.Model(&model.GroupMember{}).
+	hub.db.Model(&model.GroupMember{}).
 		Where("group_id = ? AND user_id = ?", int64(msg.ToID), int64(msg.FromID)).
 		Count(&memberCount)
 	if memberCount == 0 {
@@ -235,7 +261,7 @@ func sendGroupCallSignal(hub *Hub, msg *WSMessage) bool {
 		return true
 	}
 	var members []model.GroupMember
-	if err := dbConn.Where("group_id = ?", int64(msg.ToID)).Find(&members).Error; err != nil {
+	if err := hub.db.Where("group_id = ?", int64(msg.ToID)).Find(&members).Error; err != nil {
 		return false
 	}
 	switch action {
@@ -260,24 +286,20 @@ func sendGroupCallSignal(hub *Hub, msg *WSMessage) bool {
 	return true
 }
 
-func enrichPayloadWithSender(fromID uint64, payload []byte) []byte {
-	if fromID == 0 || len(payload) == 0 {
+func enrichPayloadWithSender(hub *Hub, fromID uint64, payload []byte) []byte {
+	if fromID == 0 || len(payload) == 0 || hub == nil || hub.db == nil {
 		return payload
 	}
 	var p chatPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return payload
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return payload
-	}
 	var account model.UserAccount
-	if err := dbConn.First(&account, int64(fromID)).Error; err != nil {
+	if err := hub.db.First(&account, int64(fromID)).Error; err != nil {
 		return payload
 	}
 	var profile model.UserProfile
-	_ = dbConn.Where("user_id = ?", int64(fromID)).First(&profile).Error
+	_ = hub.db.Where("user_id = ?", int64(fromID)).First(&profile).Error
 	name := strings.TrimSpace(profile.Nickname)
 	if name == "" {
 		name = account.Username
@@ -297,20 +319,16 @@ func enrichPayloadWithSender(fromID uint64, payload []byte) []byte {
 }
 
 func sendGroupMessage(hub *Hub, msg *WSMessage) bool {
-	if msg == nil || msg.ToID == 0 {
-		return false
-	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
+	if msg == nil || msg.ToID == 0 || hub == nil || hub.db == nil {
 		return false
 	}
 	var memberCount int64
-	dbConn.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", int64(msg.ToID), int64(msg.FromID)).Count(&memberCount)
+	hub.db.Model(&model.GroupMember{}).Where("group_id = ? AND user_id = ?", int64(msg.ToID), int64(msg.FromID)).Count(&memberCount)
 	if memberCount == 0 {
 		return false
 	}
 	var members []model.GroupMember
-	if err := dbConn.Where("group_id = ?", int64(msg.ToID)).Find(&members).Error; err != nil {
+	if err := hub.db.Where("group_id = ?", int64(msg.ToID)).Find(&members).Error; err != nil {
 		return false
 	}
 	data, _ := json.Marshal(msg)
@@ -326,11 +344,7 @@ func sendGroupMessage(hub *Hub, msg *WSMessage) bool {
 }
 
 func saveMessageAndAck(hub *Hub, msg *WSMessage, chatType int8) {
-	if msg == nil || msg.FromID == 0 || msg.ToID == 0 {
-		return
-	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
+	if msg == nil || msg.FromID == 0 || msg.ToID == 0 || hub == nil || hub.db == nil {
 		return
 	}
 	content := strings.TrimSpace(string(msg.Payload))
@@ -362,29 +376,12 @@ func saveMessageAndAck(hub *Hub, msg *WSMessage, chatType int8) {
 	default:
 		msgType = 1
 	}
-	message := model.Message{
-		FromID:    int64(msg.FromID),
-		ToID:      int64(msg.ToID),
-		ChatType:  chatType,
-		MsgType:   msgType,
-		Content:   content,
-		Status:    0,
-		CreatedAt: time.Now(),
-	}
-	if err := dbConn.Create(&message).Error; err != nil {
+	message := model.Message{FromID: int64(msg.FromID), ToID: int64(msg.ToID), ChatType: chatType, MsgType: msgType, Content: content, Status: 0, CreatedAt: time.Now()}
+	if err := hub.db.Create(&message).Error; err != nil {
 		return
 	}
-	ackPayload, _ := json.Marshal(map[string]interface{}{
-		"tempId":    tempID,
-		"messageId": message.ID,
-		"chatType":  chatType,
-	})
-	ackMsg := WSMessage{
-		Type:    "ack",
-		FromID:  msg.FromID,
-		ToID:    msg.ToID,
-		Payload: ackPayload,
-	}
+	ackPayload, _ := json.Marshal(map[string]interface{}{"tempId": tempID, "messageId": message.ID, "chatType": chatType})
+	ackMsg := WSMessage{Type: "ack", FromID: msg.FromID, ToID: msg.ToID, Payload: ackPayload}
 	if raw, err := json.Marshal(ackMsg); err == nil {
 		if client := hub.getClient(msg.FromID); client != nil {
 			client.Send <- raw
@@ -396,9 +393,8 @@ func handleReadReceipt(hub *Hub, msg *WSMessage) {
 	if msg == nil || msg.FromID == 0 || msg.ToID == 0 {
 		return
 	}
-	dbConn := db.GetDB()
-	if dbConn != nil {
-		dbConn.Model(&model.Message{}).
+	if hub != nil && hub.db != nil {
+		hub.db.Model(&model.Message{}).
 			Where("from_id = ? AND to_id = ? AND status < 1", int64(msg.ToID), int64(msg.FromID)).
 			Update("status", 1)
 	}
@@ -409,7 +405,7 @@ func handleReadReceipt(hub *Hub, msg *WSMessage) {
 }
 
 func handleRevoke(hub *Hub, msg *WSMessage) {
-	if msg == nil || msg.FromID == 0 {
+	if msg == nil || msg.FromID == 0 || hub == nil || hub.db == nil {
 		return
 	}
 	var payload chatPayload
@@ -433,23 +429,31 @@ func handleRevoke(hub *Hub, msg *WSMessage) {
 	if messageID <= 0 {
 		return
 	}
-	dbConn := db.GetDB()
-	if dbConn == nil {
-		return
-	}
 	var message model.Message
-	if err := dbConn.First(&message, messageID).Error; err != nil {
+	if err := hub.db.First(&message, messageID).Error; err != nil {
 		return
 	}
 	if message.FromID != int64(msg.FromID) {
 		return
 	}
-	dbConn.Model(&message).Updates(map[string]interface{}{
-		"status":  2,
-		"content": "",
-	})
+	hub.db.Model(&message).Updates(map[string]interface{}{"status": 2, "content": ""})
+
+	data, _ := json.Marshal(msg)
+	if message.ChatType == 2 {
+		var members []model.GroupMember
+		if err := hub.db.Where("group_id = ?", message.ToID).Find(&members).Error; err == nil {
+			for _, member := range members {
+				if uint64(member.UserID) == msg.FromID {
+					continue
+				}
+				if client := hub.getClient(uint64(member.UserID)); client != nil {
+					client.Send <- data
+				}
+			}
+		}
+		return
+	}
 	if client := hub.getClient(msg.ToID); client != nil {
-		data, _ := json.Marshal(msg)
 		client.Send <- data
 	}
 }

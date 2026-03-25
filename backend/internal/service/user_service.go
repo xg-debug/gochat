@@ -294,10 +294,15 @@ func (s *UserService) SearchConversations(userID int64, keyword string) ([]respo
 	return result, nil
 }
 
-func (s *UserService) GetMessages(userID int64, conversationID string) ([]response.MessageResponse, error) {
+func (s *UserService) GetMessages(userID int64, conversationID string, cursor int64, limit int) ([]response.MessageResponse, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return nil, errors.New("conversationId required")
+	}
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 200 {
+		limit = 200
 	}
 
 	var messages []model.Message
@@ -311,7 +316,11 @@ func (s *UserService) GetMessages(userID int64, conversationID string) ([]respon
 		if count == 0 {
 			return nil, errors.New("not in group")
 		}
-		if err := s.db.Where("chat_type = ? AND to_id = ?", 2, groupID).Order("created_at asc").Find(&messages).Error; err != nil {
+		query := s.db.Where("chat_type = ? AND to_id = ?", 2, groupID)
+		if cursor > 0 {
+			query = query.Where("id < ?", cursor)
+		}
+		if err := query.Order("id desc").Limit(limit).Find(&messages).Error; err != nil {
 			return nil, err
 		}
 	} else {
@@ -319,11 +328,15 @@ func (s *UserService) GetMessages(userID int64, conversationID string) ([]respon
 		if err != nil || peerID <= 0 {
 			return nil, errors.New("invalid conversationId")
 		}
-		if err := s.db.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID).
-			Order("created_at asc").Find(&messages).Error; err != nil {
+		query := s.db.Where("(from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?)", userID, peerID, peerID, userID)
+		if cursor > 0 {
+			query = query.Where("id < ?", cursor)
+		}
+		if err := query.Order("id desc").Limit(limit).Find(&messages).Error; err != nil {
 			return nil, err
 		}
 	}
+	reverseMessages(messages)
 
 	avatarMap := s.buildAvatarMap(messages)
 	result := make([]response.MessageResponse, 0, len(messages))
@@ -347,6 +360,12 @@ func (s *UserService) GetMessages(userID int64, conversationID string) ([]respon
 		})
 	}
 	return result, nil
+}
+
+func reverseMessages(messages []model.Message) {
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
 }
 
 func (s *UserService) loadOrEmptyProfile(userID int64) (model.UserProfile, error) {

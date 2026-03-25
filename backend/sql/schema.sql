@@ -46,8 +46,7 @@ CREATE TABLE `friends` (
   `status` tinyint DEFAULT 1,
   `created_at` datetime(3) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_friends_user_id` (`user_id`),
-  KEY `idx_friends_friend_id` (`friend_id`)
+  UNIQUE KEY `uk_friend_pair` (`user_id`,`friend_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `friend_requests` (
@@ -57,8 +56,7 @@ CREATE TABLE `friend_requests` (
   `status` tinyint DEFAULT 0,
   `created_at` datetime(3) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_friend_requests_from_user_id` (`from_user_id`),
-  KEY `idx_friend_requests_to_user_id` (`to_user_id`)
+  UNIQUE KEY `uk_friend_req_status` (`from_user_id`,`to_user_id`,`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `messages` (
@@ -103,8 +101,7 @@ CREATE TABLE `group_members` (
   `role` tinyint DEFAULT 0,
   `created_at` datetime(3) DEFAULT NULL,
   PRIMARY KEY (`id`),
-  KEY `idx_group_members_group_id` (`group_id`),
-  KEY `idx_group_members_user_id` (`user_id`)
+  UNIQUE KEY `uk_group_user` (`group_id`,`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET FOREIGN_KEY_CHECKS = 1;

@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"time"
 
 	"gochat/internal/config"
 	"gochat/internal/handler"
 	"gochat/internal/model"
 	"gochat/internal/pkg/auth"
 	"gochat/internal/pkg/db"
+	"gochat/internal/pkg/middleware"
 	zlog "gochat/internal/pkg/zlog"
 	"gochat/internal/service"
 	"gochat/internal/ws"
@@ -35,7 +37,7 @@ func main() {
 		zlog.GetLogger().Fatal("db migrate failed", zap.Error(err))
 	}
 
-	hub := ws.NewHub()
+	hub := ws.NewHub(dbConn)
 	go hub.Run()
 
 	userSvc := service.NewUserService(dbConn, ws.IsOnline)
@@ -43,6 +45,9 @@ func main() {
 	groupSvc := service.NewGroupService(dbConn)
 	uploadSvc := service.NewUploadService(dbConn)
 	h := handler.NewApp(userSvc, friendSvc, groupSvc, uploadSvc)
+	authLimiter := middleware.NewMemoryRateLimiter(30, time.Minute, middleware.KeyByIP)
+	userLimiter := middleware.NewMemoryRateLimiter(120, time.Minute, middleware.KeyByUserOrIP)
+	wsLimiter := middleware.NewMemoryRateLimiter(40, time.Minute, middleware.KeyByUserOrIP)
 
 	r := gin.Default()
 	r.GET("/health", func(c *gin.Context) {
@@ -59,8 +64,8 @@ func main() {
 	r.Static("/uploads/groups", "./uploads/groups")
 
 	api := r.Group("/api")
-	api.POST("/login", h.Login)
-	api.POST("/register", h.Register)
+	api.POST("/login", authLimiter.Middleware(), h.Login)
+	api.POST("/register", authLimiter.Middleware(), h.Register)
 
 	authorized := api.Group("/")
 	authorized.Use(auth.AuthMiddleware())
@@ -68,15 +73,15 @@ func main() {
 		authorized.POST("/logout", h.Logout)
 		authorized.GET("/profile", h.Profile)
 		authorized.PUT("/profile", h.UpdateProfile) // 更新个人信息
-		authorized.POST("/upload/avatar", h.UploadAvatar)
-		authorized.POST("/upload/chat/image", h.UploadChatImage)
-		authorized.POST("/upload/chat/file", h.UploadChatFile)
-		authorized.POST("/upload/chat/audio", h.UploadChatAudio)
-		authorized.POST("/upload/group/avatar", h.UploadGroupAvatar)
+		authorized.POST("/upload/avatar", userLimiter.Middleware(), h.UploadAvatar)
+		authorized.POST("/upload/chat/image", userLimiter.Middleware(), h.UploadChatImage)
+		authorized.POST("/upload/chat/file", userLimiter.Middleware(), h.UploadChatFile)
+		authorized.POST("/upload/chat/audio", userLimiter.Middleware(), h.UploadChatAudio)
+		authorized.POST("/upload/group/avatar", userLimiter.Middleware(), h.UploadGroupAvatar)
 
 		// 好友相关接口
 		authorized.GET("/user/search", h.SearchUser)
-		authorized.POST("/friend/request", h.SendFriendRequest)
+		authorized.POST("/friend/request", userLimiter.Middleware(), h.SendFriendRequest)
 		authorized.GET("/friend/requests", h.ListFriendRequests)
 		authorized.POST("/friend/handle", h.HandleFriendRequest)
 		authorized.POST("/friend/delete", h.DeleteFriend)
@@ -102,7 +107,7 @@ func main() {
 		authorized.POST("/group/invite", h.InviteGroupMember)
 	}
 
-	r.GET("/ws", auth.AuthMiddleware(), handler.WSHandler(hub, zlog.GetLogger()))
+	r.GET("/ws", auth.AuthMiddleware(), wsLimiter.Middleware(), handler.WSHandler(hub, zlog.GetLogger()))
 
 	addr := fmt.Sprintf("%s:%d", cfg.MainConfig.Host, cfg.MainConfig.Port)
 	if err := r.Run(addr); err != nil {

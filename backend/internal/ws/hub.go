@@ -3,6 +3,8 @@ package ws
 import (
 	"encoding/json"
 	"sync"
+
+	"gorm.io/gorm"
 )
 
 // Hub: 消息中心，统一管理所有在线连接
@@ -10,6 +12,7 @@ type Hub struct {
 	// 所有注册的客户端
 	Clients map[uint64]*Client
 	mu      sync.RWMutex
+	db      *gorm.DB
 
 	// 广播消息到所有客户端
 	Broadcast chan []byte
@@ -22,17 +25,17 @@ type Hub struct {
 }
 
 // NewHub: 创建一个新的消息中心
-func NewHub() *Hub {
+func NewHub(db *gorm.DB) *Hub {
 	hub := &Hub{
 		Clients:    make(map[uint64]*Client),
 		Broadcast:  make(chan []byte),
 		Register:   make(chan *Client),
 		Unregister: make(chan *Client),
+		db:         db,
 	}
 	setDefaultHub(hub)
 	return hub
 }
-		
 
 // Run: 启动消息中心，处理注册、注销和广播消息
 func (h *Hub) Run() {

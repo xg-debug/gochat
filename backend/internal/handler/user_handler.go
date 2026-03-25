@@ -94,7 +94,7 @@ func (h *App) Messages(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "conversationId required"})
 		return
 	}
-	result, err := h.User.GetMessages(currentUserID(c), req.ConversationID)
+	result, err := h.User.GetMessages(currentUserID(c), req.ConversationID, req.Cursor, req.Limit)
 	if err != nil {
 		switch {
 		case strings.Contains(err.Error(), "required"), strings.Contains(err.Error(), "invalid"):

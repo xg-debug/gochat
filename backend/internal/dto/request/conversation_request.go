@@ -6,4 +6,6 @@ type SearchConversationsQuery struct {
 
 type MessagesQuery struct {
 	ConversationID string `form:"conversationId" binding:"required"`
+	Cursor         int64  `form:"cursor"`
+	Limit          int    `form:"limit"`
 }
