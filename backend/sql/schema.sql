@@ -64,11 +64,13 @@ CREATE TABLE `messages` (
   `from_id` bigint DEFAULT NULL,
   `to_id` bigint DEFAULT NULL,
   `chat_type` tinyint DEFAULT NULL,
+  `client_msg_id` varchar(100) DEFAULT NULL,
   `msg_type` tinyint DEFAULT NULL,
   `content` text,
   `status` tinyint DEFAULT 0,
   `created_at` datetime(3) DEFAULT NULL,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_msg_dedupe` (`from_id`,`to_id`,`chat_type`,`client_msg_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE `files` (

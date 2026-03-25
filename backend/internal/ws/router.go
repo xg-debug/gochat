@@ -2,12 +2,15 @@ package ws
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"gochat/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // 分发逻辑
@@ -363,6 +366,12 @@ func saveMessageAndAck(hub *Hub, msg *WSMessage, chatType int8) {
 	if content == "" {
 		return
 	}
+	if tempID != "" {
+		if existing, err := findMessageByClientMsgID(hub, msg, chatType, tempID); err == nil {
+			sendAckMessage(hub, msg, chatType, tempID, existing.ID)
+			return
+		}
+	}
 	msgType := int8(1)
 	switch strings.ToLower(contentType) {
 	case "image":
@@ -376,17 +385,64 @@ func saveMessageAndAck(hub *Hub, msg *WSMessage, chatType int8) {
 	default:
 		msgType = 1
 	}
-	message := model.Message{FromID: int64(msg.FromID), ToID: int64(msg.ToID), ChatType: chatType, MsgType: msgType, Content: content, Status: 0, CreatedAt: time.Now()}
+	var clientMsgID *string
+	if tempID != "" {
+		clientMsgID = &tempID
+	}
+	message := model.Message{
+		FromID:      int64(msg.FromID),
+		ToID:        int64(msg.ToID),
+		ChatType:    chatType,
+		ClientMsgID: clientMsgID,
+		MsgType:     msgType,
+		Content:     content,
+		Status:      0,
+		CreatedAt:   time.Now(),
+	}
 	if err := hub.db.Create(&message).Error; err != nil {
+		if tempID != "" && isDuplicateKeyError(err) {
+			if existing, findErr := findMessageByClientMsgID(hub, msg, chatType, tempID); findErr == nil {
+				sendAckMessage(hub, msg, chatType, tempID, existing.ID)
+			}
+		}
 		return
 	}
-	ackPayload, _ := json.Marshal(map[string]interface{}{"tempId": tempID, "messageId": message.ID, "chatType": chatType})
+	sendAckMessage(hub, msg, chatType, tempID, message.ID)
+}
+
+func findMessageByClientMsgID(hub *Hub, msg *WSMessage, chatType int8, tempID string) (model.Message, error) {
+	var existing model.Message
+	if hub == nil || hub.db == nil || msg == nil || tempID == "" {
+		return existing, errors.New("invalid args")
+	}
+	err := hub.db.
+		Where("from_id = ? AND to_id = ? AND chat_type = ? AND client_msg_id = ?", int64(msg.FromID), int64(msg.ToID), chatType, tempID).
+		First(&existing).Error
+	return existing, err
+}
+
+func sendAckMessage(hub *Hub, msg *WSMessage, chatType int8, tempID string, messageID int64) {
+	if hub == nil || msg == nil || msg.FromID == 0 || messageID <= 0 {
+		return
+	}
+	ackPayload, _ := json.Marshal(map[string]interface{}{"tempId": tempID, "messageId": messageID, "chatType": chatType})
 	ackMsg := WSMessage{Type: "ack", FromID: msg.FromID, ToID: msg.ToID, Payload: ackPayload}
 	if raw, err := json.Marshal(ackMsg); err == nil {
 		if client := hub.getClient(msg.FromID); client != nil {
 			client.Send <- raw
 		}
 	}
+}
+
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "duplicate") || strings.Contains(lower, "duplicated") || strings.Contains(lower, "unique constraint")
 }
 
 func handleReadReceipt(hub *Hub, msg *WSMessage) {
